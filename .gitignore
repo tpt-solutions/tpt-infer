@@ -1,0 +1,22 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Generated files
+/crates/tpt-infer-onnx/src/onnx.rs
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmarks output
+criterion/
+
+# Test model fixtures (large binaries — download in CI)
+*.onnx

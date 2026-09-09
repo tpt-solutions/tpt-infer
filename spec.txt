@@ -1,0 +1,40 @@
+Design Document 3: tpt-infer
+The Edge AI & Local Inference Runtime
+1. Vision
+The foundational engine for tpt-anima and tpt-crucible. A zero-legacy, hardware-agnostic inference runtime that compiles and executes ML models without relying on CUDA, Python, C++ toolchains, or massive C-FFI bindings like onnxruntime.
+2. Workspace Architecture (8 Crates)
+tpt-infer-core: Tensor traits, no_std memory allocators, and const-generic shape typing (e.g., Tensor<f32, [1, 28, 28]>).
+tpt-infer-ops: Highly optimized, SIMD-vectorized (via core::simd) matrix multiplication, convolutions, and activation functions.
+tpt-infer-graph: A compile-time-checked computation graph builder that validates tensor shape compatibility at compile time.
+tpt-infer-onnx: Pure-Rust ONNX model parser and operator registry (no onnxruntime C-FFI).
+tpt-infer-quantize: INT8 and INT4 quantization/dequantization kernels for edge deployment.
+tpt-infer-compile: Ahead-of-time (AOT) compiler that translates computation graphs into raw, optimized Rust code or FPGA/photonic mesh instructions (tpt-crucible seed).
+tpt-infer-runtime: The zero-allocation, bare-metal inference execution engine (tpt-anima seed).
+tpt-infer-vision: Pure-Rust image preprocessing (resize, normalize, letterbox) tailored for vision models, integrating with tpt-kinetix.
+3. Technical Deep Dive: The "Secret Sauce"
+Const-Generic Shape Checking: Unlike PyTorch or standard Rust ML crates that panic at runtime on shape mismatches, tpt-infer-graph uses const generics to ensure that a MatMul between a [1, 784] and [784, 10] tensor is guaranteed to yield a [1, 10] tensor at compile time.
+AOT Rust Code Generation: tpt-infer-compile doesn't just interpret the graph. It unrolls the operations and generates a static Rust function. This allows the Rust compiler (LLVM) to apply aggressive, model-specific optimizations (loop unrolling, register allocation) that generic runtimes cannot achieve.
+Hardware Abstraction Layer (HAL): The ops crate will define traits that can be backed by CPU SIMD, WebGPU, or custom FPGA bitstreams, making the runtime truly hardware-agnostic.
+4. Target API
+
+use tpt_infer::prelude::*;
+
+// 1. Load and compile an ONNX model at build time or runtime
+let model = tpt_infer_onnx::load("model.onnx")?;
+let compiled = tpt_infer_compile::aot_compile(&model)?;
+
+// 2. Create a strictly typed input tensor
+let input: Tensor<f32, [1, 3, 224, 224]> = tpt_infer_vision::preprocess_image(&image_bytes)?;
+
+// 3. Execute with zero allocation
+let mut arena = BumpArena::new(); // no_std compatible allocator
+let output: Tensor<f32, [1, 1000]> = compiled.execute(&input, &mut arena)?;
+
+println!("Top class: {}", output.argmax());
+
+5. Execution Roadmap
+Phase 1 (Months 1-3): tpt-infer-core + tpt-infer-ops + tpt-infer-graph. Establish the const-generic tensor foundation and SIMD math.
+Phase 2 (Months 4-5): tpt-infer-onnx + tpt-infer-quantize. Enable loading real-world models and shrinking them for edge use.
+Phase 3 (Months 6-8): tpt-infer-compile + tpt-infer-runtime + tpt-infer-vision. Deliver the AOT compilation pipeline and end-to-end vision inference.
+
+
