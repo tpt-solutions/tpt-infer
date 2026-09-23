@@ -4,6 +4,14 @@
 //! the best [`AnyBackend`] available: AVX-512 (when the `avx512` feature is
 //! enabled and supported) over AVX2 on x86_64, NEON on aarch64, SIMD128 on
 //! wasm32, and the naive scalar reference otherwise.
+//!
+//! [`crate::webgpu::WebGpuBackend`] (feature `webgpu`) is deliberately not a
+//! variant of [`AnyBackend`]: unlike every other backend here, it wraps a
+//! real `wgpu::Device`/`Queue` pair, so it can't be a zero-sized, `Copy`,
+//! unconditionally-constructible value, and acquiring one is async and
+//! fallible (no GPU adapter on a headless machine). Construct it directly
+//! via `WebGpuBackend::new()` (returns `Option`) when GPU dispatch is
+//! wanted.
 
 use crate::backend::{Backend, Conv2dOptions, OpError};
 use crate::naive::NaiveBackend;
@@ -16,8 +24,6 @@ use crate::avx512::Avx512Backend;
 use crate::neon::NeonBackend;
 #[cfg(target_arch = "wasm32")]
 use crate::wasm::WasmSimdBackend;
-#[cfg(feature = "webgpu")]
-use crate::webgpu::WebGpuBackend;
 
 /// A concrete backend chosen for this machine (enum dispatch, `no_std`-friendly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +43,6 @@ pub enum AnyBackend {
     /// wasm32 SIMD128 (requires `target_feature = "simd128"`).
     #[cfg(target_arch = "wasm32")]
     WasmSimd,
-    /// WebGPU stub (feature `webgpu`); constructible manually, never
-    /// auto-selected because its operations return [`OpError::Unsupported`].
-    #[cfg(feature = "webgpu")]
-    WebGpu,
 }
 
 impl Backend for AnyBackend {
@@ -55,8 +57,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.name(),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.name(),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.name(),
         }
     }
 
@@ -78,8 +78,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.matmul(a, a_shape, b, b_shape, out),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.matmul(a, a_shape, b, b_shape, out),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.matmul(a, a_shape, b, b_shape, out),
         }
     }
 
@@ -108,10 +106,6 @@ impl Backend for AnyBackend {
             AnyBackend::WasmSimd => {
                 WasmSimdBackend.conv2d(input, in_shape, weight, w_shape, out, options)
             }
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => {
-                WebGpuBackend.conv2d(input, in_shape, weight, w_shape, out, options)
-            }
         }
     }
 
@@ -126,8 +120,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.elementwise_add(a, b, out),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.elementwise_add(a, b, out),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.elementwise_add(a, b, out),
         }
     }
 
@@ -142,8 +134,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.relu(a, out),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.relu(a, out),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.relu(a, out),
         }
     }
 
@@ -158,8 +148,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.softmax(a, out, row_len),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.softmax(a, out, row_len),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.softmax(a, out, row_len),
         }
     }
 
@@ -174,8 +162,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.sigmoid(a, out),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.sigmoid(a, out),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.sigmoid(a, out),
         }
     }
 
@@ -190,8 +176,6 @@ impl Backend for AnyBackend {
             AnyBackend::Neon => NeonBackend.gelu(a, out),
             #[cfg(target_arch = "wasm32")]
             AnyBackend::WasmSimd => WasmSimdBackend.gelu(a, out),
-            #[cfg(feature = "webgpu")]
-            AnyBackend::WebGpu => WebGpuBackend.gelu(a, out),
         }
     }
 }
@@ -508,14 +492,6 @@ mod tests {
             backend.gelu(&a, &mut got).unwrap();
             assert_close(&backend, "gelu", &got, &want);
         }
-    }
-
-    #[cfg(feature = "webgpu")]
-    #[test]
-    fn webgpu_stub_is_never_auto_selected() {
-        let selected = select_backend();
-        assert_ne!(selected.name(), "webgpu");
-        assert!(!available_backends().iter().any(|b| b.name() == "webgpu"));
     }
 
     #[cfg(all(feature = "avx512", target_arch = "x86_64"))]

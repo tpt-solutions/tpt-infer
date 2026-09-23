@@ -13,11 +13,12 @@ rust-version.workspace = true
 default = ["std"]
 std = ["tpt-infer-core/alloc"]
 avx512 = []
-webgpu = ["dep:wgpu"]
+webgpu = ["dep:wgpu", "dep:pollster"]
 
 [dependencies]
 tpt-infer-core = { workspace = true }
 wgpu = { workspace = true, optional = true }
+pollster = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
