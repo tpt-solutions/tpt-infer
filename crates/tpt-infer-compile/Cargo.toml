@@ -19,5 +19,15 @@ tpt-infer-graph = { workspace = true, default-features = false }
 quote = { workspace = true }
 proc-macro2 = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true }
+tpt-infer-ops = { workspace = true }
+tpt-infer-runtime = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "codegen_vs_interpreted"
+harness = false
+
 [package.metadata.docs.rs]
 all-features = true
