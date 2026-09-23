@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-quantize"
 description = "INT8/INT4 quantization and dequantization kernels for edge deployment"
+keywords = ["quantization", "int8", "inference", "ml", "edge"]
+categories = ["science", "algorithms", "compression"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-onnx"
 description = "Pure-Rust ONNX model parser and operator registry (no C-FFI)"
+keywords = ["onnx", "parser", "inference", "ml", "protobuf"]
+categories = ["science", "parsing", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

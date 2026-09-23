@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-ops"
 description = "Hardware abstraction layer and SIMD-accelerated ML operators for tpt-infer"
+keywords = ["simd", "inference", "ml", "gpu", "hal"]
+categories = ["science", "algorithms", "hardware-support", "no-std"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

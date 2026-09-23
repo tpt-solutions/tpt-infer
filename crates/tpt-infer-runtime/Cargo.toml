@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-runtime"
 description = "Zero-allocation bare-metal inference execution engine"
+keywords = ["inference", "no-std", "embedded", "ml", "runtime"]
+categories = ["no-std", "embedded", "science", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-graph"
 description = "Compile-time-checked computation graph builder with const-generic shape validation"
+keywords = ["graph", "inference", "type-state", "ml", "no-std"]
+categories = ["science", "algorithms", "data-structures", "no-std"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

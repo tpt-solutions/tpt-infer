@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-vision"
 description = "Pure-Rust image preprocessing (resize, normalize, letterbox) for vision models"
+keywords = ["image", "preprocessing", "inference", "vision", "ml"]
+categories = ["multimedia::images", "multimedia", "science"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

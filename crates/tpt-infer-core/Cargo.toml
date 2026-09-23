@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-core"
 description = "Const-generic tensor types, no_std allocators, and dtype definitions for tpt-infer"
+keywords = ["tensor", "no-std", "inference", "embedded", "ml"]
+categories = ["no-std", "science", "embedded", "data-structures"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

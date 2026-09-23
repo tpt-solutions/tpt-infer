@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer-compile"
 description = "Ahead-of-time compiler that translates computation graphs into optimized Rust code"
+keywords = ["codegen", "compiler", "inference", "aot", "ml"]
+categories = ["science", "compilers", "algorithms"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

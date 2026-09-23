@@ -1,6 +1,8 @@
 [package]
 name = "tpt-infer"
 description = "Edge AI & local inference runtime — facade crate unifying the tpt-infer workspace"
+keywords = ["inference", "onnx", "edge", "ml", "runtime"]
+categories = ["science", "algorithms", "embedded"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
