@@ -9,16 +9,15 @@
 //! synchronously (via `Device::poll(Maintain::Wait)`), so the trait's
 //! synchronous signature is preserved.
 //!
-//! `matmul`, `elementwise_add`, `relu`, `sigmoid`, `gelu`, and `softmax` are
-//! real GPU kernels. [`Backend::conv2d`] still returns
-//! [`OpError::Unsupported`]: a correct, reasonably efficient GPU conv2d
-//! needs an im2col (or direct tiled) shader, which is a substantially
-//! bigger undertaking than the other kernels and was left out to keep the
-//! implemented kernels correct and well-tested rather than rushed.
+//! `matmul`, `conv2d`, `elementwise_add`, `relu`, `sigmoid`, `gelu`, and
+//! `softmax` are all real GPU kernels. `conv2d` is a direct (non-im2col)
+//! dispatch: one thread per output element computes the dot product over
+//! its receptive field, which is simple and correct but leaves im2col/tiled
+//! throughput optimizations for later.
 
 use crate::backend::{
-    validate_binary, validate_matmul, validate_softmax, validate_unary, Backend, Conv2dOptions,
-    OpError,
+    validate_binary, validate_conv2d, validate_matmul, validate_softmax, validate_unary, Backend,
+    Conv2dOptions, OpError,
 };
 
 const UNARY_SHADER: &str = r#"
@@ -133,6 +132,68 @@ fn softmax_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
+const CONV2D_SHADER: &str = r#"
+struct Dims {
+    n: u32,
+    c: u32,
+    h: u32,
+    w: u32,
+    oc: u32,
+    kh: u32,
+    kw: u32,
+    oh: u32,
+    ow: u32,
+    stride_h: u32,
+    stride_w: u32,
+    pad_h: u32,
+    pad_w: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+};
+
+@group(0) @binding(0) var<storage, read> input_buf: array<f32>;
+@group(0) @binding(1) var<storage, read> weight_buf: array<f32>;
+@group(0) @binding(2) var<storage, read_write> output_buf: array<f32>;
+@group(0) @binding(3) var<uniform> dims: Dims;
+
+@compute @workgroup_size(64)
+fn conv2d_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    let total = dims.n * dims.oc * dims.oh * dims.ow;
+    if (idx >= total) {
+        return;
+    }
+
+    let ox = idx % dims.ow;
+    let oy = (idx / dims.ow) % dims.oh;
+    let o = (idx / (dims.ow * dims.oh)) % dims.oc;
+    let ni = idx / (dims.ow * dims.oh * dims.oc);
+
+    var acc: f32 = 0.0;
+    for (var ci: u32 = 0u; ci < dims.c; ci = ci + 1u) {
+        for (var ky: u32 = 0u; ky < dims.kh; ky = ky + 1u) {
+            let y = oy * dims.stride_h + ky;
+            if (y < dims.pad_h || (y - dims.pad_h) >= dims.h) {
+                continue;
+            }
+            let iy = y - dims.pad_h;
+            for (var kx: u32 = 0u; kx < dims.kw; kx = kx + 1u) {
+                let x = ox * dims.stride_w + kx;
+                if (x < dims.pad_w || (x - dims.pad_w) >= dims.w) {
+                    continue;
+                }
+                let ix = x - dims.pad_w;
+                let in_idx = ((ni * dims.c + ci) * dims.h + iy) * dims.w + ix;
+                let w_idx = ((o * dims.c + ci) * dims.kh + ky) * dims.kw + kx;
+                acc = acc + input_buf[in_idx] * weight_buf[w_idx];
+            }
+        }
+    }
+    output_buf[idx] = acc;
+}
+"#;
+
 /// Real WebGPU compute backend.
 ///
 /// See the [module documentation](self) for which operators are GPU-backed.
@@ -149,6 +210,8 @@ pub struct WebGpuBackend {
     matmul_pipeline: wgpu::ComputePipeline,
     softmax_bgl: wgpu::BindGroupLayout,
     softmax_pipeline: wgpu::ComputePipeline,
+    conv2d_bgl: wgpu::BindGroupLayout,
+    conv2d_pipeline: wgpu::ComputePipeline,
 }
 
 fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
@@ -300,6 +363,27 @@ impl WebGpuBackend {
             "softmax",
         );
 
+        let conv2d_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("conv2d"),
+            source: wgpu::ShaderSource::Wgsl(CONV2D_SHADER.into()),
+        });
+        let conv2d_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("conv2d_bgl"),
+            entries: &[
+                storage_entry(0, true),
+                storage_entry(1, true),
+                storage_entry(2, false),
+                uniform_entry(3),
+            ],
+        });
+        let conv2d_pipeline = make_pipeline(
+            &device,
+            &conv2d_module,
+            &conv2d_bgl,
+            "conv2d_main",
+            "conv2d",
+        );
+
         Some(Self {
             device,
             queue,
@@ -313,6 +397,8 @@ impl WebGpuBackend {
             matmul_pipeline,
             softmax_bgl,
             softmax_pipeline,
+            conv2d_bgl,
+            conv2d_pipeline,
         })
     }
 
@@ -520,19 +606,98 @@ impl Backend for WebGpuBackend {
         Ok(())
     }
 
-    /// Not yet implemented: a correct GPU conv2d needs an im2col (or
-    /// direct/tiled) shader, which is out of scope for this pass. Falls
-    /// back to reporting [`OpError::Unsupported`] like the previous stub.
+    /// Direct (non-im2col) GPU conv2d: one thread per output element
+    /// computes the dot product over its receptive field, matching
+    /// [`crate::naive::conv2d`]'s NCHW/OIHW semantics exactly.
     fn conv2d(
         &self,
-        _input: &[f32],
-        _in_shape: [usize; 4],
-        _weight: &[f32],
-        _w_shape: [usize; 4],
-        _out: &mut [f32],
-        _options: Conv2dOptions,
+        input: &[f32],
+        in_shape: [usize; 4],
+        weight: &[f32],
+        w_shape: [usize; 4],
+        out: &mut [f32],
+        options: Conv2dOptions,
     ) -> Result<(), OpError> {
-        Err(OpError::Unsupported)
+        let [n, oc, oh, ow] = validate_conv2d(input, in_shape, weight, w_shape, out, options)?;
+        let total = n * oc * oh * ow;
+        if total == 0 {
+            return Ok(());
+        }
+        let [_, c, h, w] = in_shape;
+        let [_, _, kh, kw] = w_shape;
+
+        let input_buf = self.upload(
+            input,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            "conv2d_input",
+        );
+        let weight_buf = self.upload(
+            weight,
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            "conv2d_weight",
+        );
+        let out_buf = self.empty_output(out.len(), "conv2d_out");
+        let dims_buf = self.upload_uniform(
+            &[
+                n as u32,
+                c as u32,
+                h as u32,
+                w as u32,
+                oc as u32,
+                kh as u32,
+                kw as u32,
+                oh as u32,
+                ow as u32,
+                options.stride_h as u32,
+                options.stride_w as u32,
+                options.pad_h as u32,
+                options.pad_w as u32,
+                0u32,
+                0u32,
+                0u32,
+            ],
+            "conv2d_dims",
+        );
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("conv2d_bg"),
+            layout: &self.conv2d_bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: weight_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: out_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: dims_buf.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: None,
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.conv2d_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            let groups = (total as u32).div_ceil(64);
+            pass.dispatch_workgroups(groups, 1, 1);
+        }
+        self.queue.submit(Some(encoder.finish()));
+        let result = self.read_back(&out_buf, out.len());
+        out.copy_from_slice(&result);
+        Ok(())
     }
 
     fn elementwise_add(&self, a: &[f32], b: &[f32], out: &mut [f32]) -> Result<(), OpError> {
@@ -787,25 +952,105 @@ mod tests {
     }
 
     #[test]
-    fn conv2d_reports_unsupported() {
+    fn conv2d_matches_naive_stride1_pad0() {
         let Some(backend) = try_backend() else {
             return;
         };
-        let a = [1.0f32; 9];
-        let w = [1.0f32; 4];
-        let mut out = [0.0f32; 4];
-        assert_eq!(
-            backend
-                .conv2d(
-                    &a,
-                    [1, 1, 3, 3],
-                    &w,
-                    [1, 1, 2, 2],
-                    &mut out,
-                    Conv2dOptions::new()
-                )
-                .unwrap_err(),
-            OpError::Unsupported
-        );
+        // Single channel in/out, 3x3 input, 2x2 kernel, no padding.
+        let a = [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let w = [1.0f32, 0.0, 0.0, -1.0];
+        let mut want = [0.0f32; 4];
+        NaiveBackend::new()
+            .conv2d(
+                &a,
+                [1, 1, 3, 3],
+                &w,
+                [1, 1, 2, 2],
+                &mut want,
+                Conv2dOptions::new(),
+            )
+            .unwrap();
+        let mut got = [0.0f32; 4];
+        backend
+            .conv2d(
+                &a,
+                [1, 1, 3, 3],
+                &w,
+                [1, 1, 2, 2],
+                &mut got,
+                Conv2dOptions::new(),
+            )
+            .unwrap();
+        assert_close(&got, &want);
+    }
+
+    #[test]
+    fn conv2d_matches_naive_with_padding() {
+        let Some(backend) = try_backend() else {
+            return;
+        };
+        let in_shape = [1, 2, 5, 5];
+        let w_shape = [3, 2, 3, 3];
+        let options = Conv2dOptions::with_stride_padding(1, 1, 1, 1);
+        let a = lcg(2 * 5 * 5, 21);
+        let w = lcg(3 * 2 * 3 * 3, 22);
+        let oh = 5 + 2 - 3 + 1;
+        let ow = 5 + 2 - 3 + 1;
+        let mut want = vec![0.0f32; 3 * oh * ow];
+        NaiveBackend::new()
+            .conv2d(&a, in_shape, &w, w_shape, &mut want, options)
+            .unwrap();
+        let mut got = vec![0.0f32; 3 * oh * ow];
+        backend
+            .conv2d(&a, in_shape, &w, w_shape, &mut got, options)
+            .unwrap();
+        assert_close(&got, &want);
+    }
+
+    #[test]
+    fn conv2d_matches_naive_stride2() {
+        let Some(backend) = try_backend() else {
+            return;
+        };
+        let in_shape = [1, 1, 8, 8];
+        let w_shape = [2, 1, 3, 3];
+        let options = Conv2dOptions::with_stride_padding(2, 2, 0, 0);
+        let a = lcg(8 * 8, 23);
+        let w = lcg(2 * 3 * 3, 24);
+        let oh = (8 - 3) / 2 + 1;
+        let ow = (8 - 3) / 2 + 1;
+        let mut want = vec![0.0f32; 2 * oh * ow];
+        NaiveBackend::new()
+            .conv2d(&a, in_shape, &w, w_shape, &mut want, options)
+            .unwrap();
+        let mut got = vec![0.0f32; 2 * oh * ow];
+        backend
+            .conv2d(&a, in_shape, &w, w_shape, &mut got, options)
+            .unwrap();
+        assert_close(&got, &want);
+    }
+
+    #[test]
+    fn conv2d_matches_naive_multi_batch_multi_channel() {
+        let Some(backend) = try_backend() else {
+            return;
+        };
+        // 2 batches, 4 input channels, 5 output channels, stride 2, pad 1.
+        let in_shape = [2, 4, 7, 7];
+        let w_shape = [5, 4, 3, 3];
+        let options = Conv2dOptions::with_stride_padding(2, 2, 1, 1);
+        let a = lcg(2 * 4 * 7 * 7, 25);
+        let w = lcg(5 * 4 * 3 * 3, 26);
+        let oh = (7 + 2 - 3) / 2 + 1;
+        let ow = (7 + 2 - 3) / 2 + 1;
+        let mut want = vec![0.0f32; 2 * 5 * oh * ow];
+        NaiveBackend::new()
+            .conv2d(&a, in_shape, &w, w_shape, &mut want, options)
+            .unwrap();
+        let mut got = vec![0.0f32; 2 * 5 * oh * ow];
+        backend
+            .conv2d(&a, in_shape, &w, w_shape, &mut got, options)
+            .unwrap();
+        assert_close(&got, &want);
     }
 }

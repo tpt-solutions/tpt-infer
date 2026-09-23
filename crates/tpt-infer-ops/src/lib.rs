@@ -11,7 +11,7 @@
 //! | x86_64 AVX-512 | `avx512` | feature `avx512` + CPU support |
 //! | aarch64 NEON | `neon` | `target_arch = "aarch64"` |
 //! | wasm32 SIMD128 | `wasm` | `target_arch = "wasm32"` + `target_feature = "simd128"` |
-//! | WebGPU | `webgpu` | feature `webgpu`; GPU compute via `wgpu`, `conv2d` still [`OpError::Unsupported`] |
+//! | WebGPU | `webgpu` | feature `webgpu`; GPU compute via `wgpu` for every `Backend` operator, including `conv2d` |
 //!
 //! All operators write into caller-provided output slices, so hot paths can
 //! run without allocating. Use [`select_backend`] to pick the best backend

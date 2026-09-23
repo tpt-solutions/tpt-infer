@@ -21,7 +21,7 @@ inline Rust rather than calling into a `Backend` at runtime.
 | x86_64 AVX-512 | `avx512` | `Avx512Backend` | feature `avx512` + CPU support |
 | aarch64 NEON | `neon` | `NeonBackend` | `target_arch = "aarch64"` |
 | wasm32 SIMD128 | `wasm` | `WasmSimdBackend` | `target_arch = "wasm32"` + `target_feature = "simd128"` |
-| WebGPU | `webgpu` | `WebGpuBackend` | feature `webgpu`; real wgpu/WGSL compute dispatch for `matmul`, `elementwise_add`, `relu`, `sigmoid`, `gelu`, `softmax` — `conv2d` still returns `OpError::Unsupported` (no im2col shader yet) |
+| WebGPU | `webgpu` | `WebGpuBackend` | feature `webgpu`; real wgpu/WGSL compute dispatch for `matmul`, `conv2d`, `elementwise_add`, `relu`, `sigmoid`, `gelu`, `softmax` |
 
 All operators write into a caller-provided output slice (no allocation) and validate
 buffer lengths up front, returning `OpError` on mismatch instead of panicking.
