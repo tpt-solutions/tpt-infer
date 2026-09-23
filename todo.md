@@ -30,7 +30,7 @@
 - [x] `#![no_std]` with `alloc` feature for heap-backed tensors
 - [x] Unit tests: tensor shape construction
 - [x] Unit tests: BumpArena alloc + reset
-- [ ] Build with `--target thumbv7m-none-eabi` to confirm no_std
+- [x] Build with `--target thumbv7m-none-eabi` to confirm no_std (verified for tpt-infer-core, tpt-infer-ops, tpt-infer-runtime with `--no-default-features`)
 
 ### tpt-infer-ops
 
@@ -40,7 +40,7 @@
 - [x] x86_64 AVX-512 SIMD backend (feature-gated)
 - [x] ARM NEON/SVE backend (`std::arch::aarch64`)
 - [x] WASM SIMD backend (`std::arch::wasm32`)
-- [ ] WebGPU backend via `wgpu` (feature = "webgpu") — stub only, every op returns `Unsupported`
+- [x] WebGPU backend via `wgpu` (feature = "webgpu") — real WGSL compute dispatch for matmul/elementwise/softmax; `conv2d` still returns `Unsupported` (no im2col shader yet)
 - [x] Runtime dispatch: `#[cfg(target_feature)]` + `#[cfg(target_arch)]`
 - [x] `criterion` benchmark: matmul at [1,784]×[784,10] and [1,3,224,224] conv shapes
 - [x] Unit tests: all backends produce identical results to naive reference
@@ -134,10 +134,10 @@
 
 ## Documentation & Publishing
 
-- [ ] Crate-level `#![doc]` for all 8 crates
-- [ ] `README.md` with architecture diagram, quick-start, and feature matrix
-- [ ] `docs.rs` metadata in each `Cargo.toml`
-- [ ] Verify `cargo doc --workspace --no-deps` builds clean
-- [ ] Set up `CHANGELOG.md`
+- [x] Crate-level `#![doc]` for all 8 crates (plus the facade — all 9)
+- [x] `README.md` with architecture diagram, quick-start, and feature matrix — every crate now has its own `README.md`; check root `README.md` separately if a workspace-level architecture diagram is still wanted
+- [x] `docs.rs` metadata in each `Cargo.toml` (`[package.metadata.docs.rs] all-features = true`, pre-existing) plus new `keywords`/`categories` on every crate
+- [x] Verify `cargo doc --workspace --no-deps` builds clean
+- [x] Set up `CHANGELOG.md` — every crate has its own
 - [ ] Tag `v0.1.0` pre-release on GitHub
 - [ ] Publish to crates.io (when ready)
