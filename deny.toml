@@ -1,0 +1,50 @@
+# cargo-deny configuration for tpt-infer.
+#
+# Run locally with `cargo deny check`. CI runs this on every push/PR (see
+# .github/workflows/ci.yml). tpt-infer-onnx parses untrusted ONNX model
+# files and tpt-infer-vision parses untrusted image bytes, so `prost`,
+# `image`, and `wgpu` (the largest native surface, used by the optional
+# WebGPU backend) are the highest-priority dependencies for this check.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Only check direct workspace dependencies for "unmaintained" status — a
+# heads-up, not a shipped vulnerability. Deep transitive deps this project
+# doesn't control (e.g. `paste`, pulled in by wgpu's macOS `metal` backend)
+# shouldn't block CI. Actual vulnerabilities are still denied regardless of
+# depth.
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+# Permissive licenses compatible with this workspace's dual MIT/Apache-2.0.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "NCSA",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "BSL-1.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Duplicate transitive versions are common in a workspace this size (wgpu,
+# image, etc. each pull their own graphs) and aren't worth blocking a
+# solo-maintainer's CI over; flag them without failing the build.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -32,7 +32,7 @@
 //! | Feature | Default | Unlocks |
 //! |---------|---------|---------|
 //! | `ops-cpu` | yes | [`prelude::Backend`], [`prelude::NaiveBackend`], [`prelude::select_backend`] |
-//! | `ops-webgpu` | no | WebGPU backend stub (implies `ops-cpu`) |
+//! | `ops-webgpu` | no | WebGPU backend (real WGSL compute kernels: matmul/conv2d/elementwise/relu/sigmoid/gelu/softmax; implies `ops-cpu`) |
 //! | `onnx` | yes | `prelude::load` — parse `.onnx` files into a [`prelude::ComputationGraph`] |
 //! | `compile` | yes | [`prelude::aot_compile`] — graph-to-Rust AOT codegen |
 //! | `runtime` | yes | [`prelude::execute`] / [`prelude::execute_graph`] / [`prelude::argmax`] — interpreted graph execution |

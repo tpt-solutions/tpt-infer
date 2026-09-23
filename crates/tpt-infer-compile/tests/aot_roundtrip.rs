@@ -272,22 +272,24 @@ fn compiled_source_matches_interpreted_runtime() {
 
 #[test]
 fn unsupported_operator_reports_error_instead_of_panicking() {
-    // `Gelu` has no codegen support (only `Relu`/`Sigmoid` do); `Softmax`
-    // is now compiled (last axis only), so it can no longer stand in for
-    // "genuinely unsupported" here.
+    // `Operator::Custom` (an ONNX op with no native `Operator` mapping) is
+    // the remaining genuinely-unsupported case now that `Gelu` and
+    // `Softmax` (last axis only) both have codegen.
     let mut g = ComputationGraph::new();
     let x = g
         .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
         .unwrap();
     let y = g
-        .add_node(Node::new(1, Operator::Gelu, vec![x], &[1, 4]).unwrap())
+        .add_node(
+            Node::new(1, Operator::Custom("LayerNormalization".into()), vec![x], &[1, 4]).unwrap(),
+        )
         .unwrap();
     g.mark_output(y).unwrap();
 
     let err = aot_compile(&g).unwrap_err();
     match err {
         tpt_infer_compile::CompileError::UnsupportedOperator { name, node } => {
-            assert_eq!(name, "Gelu");
+            assert_eq!(name, "Custom");
             assert_eq!(node, 1);
         }
         other => panic!("expected UnsupportedOperator, got {other:?}"),
@@ -353,6 +355,22 @@ fn softmax_last_axis_matches_interpreted_runtime() {
 
     let input = vec![1.0f32, 2.0, -1.0, 0.5, -3.0, 4.0, 0.0, 1.5];
     assert_roundtrip_matches(&g, &input, 1e-4);
+}
+
+#[test]
+fn gelu_matches_interpreted_runtime() {
+    // x [1,4] (runtime) --Gelu--> [1,4]
+    let mut g = ComputationGraph::new();
+    let x = g
+        .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
+        .unwrap();
+    let y = g
+        .add_node(Node::new(1, Operator::Gelu, vec![x], &[1, 4]).unwrap())
+        .unwrap();
+    g.mark_output(y).unwrap();
+
+    let input = vec![-2.0f32, -0.5, 0.5, 2.0];
+    assert_roundtrip_matches(&g, &input, 1e-6);
 }
 
 #[test]

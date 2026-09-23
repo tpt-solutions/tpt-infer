@@ -234,7 +234,9 @@ pub fn selected_backend() -> &'static str {
 }
 
 /// Every backend that can compute on this machine, ordered worst-to-best
-/// (always includes [`AnyBackend::Naive`]; excludes the WebGPU stub).
+/// (always includes [`AnyBackend::Naive`]; excludes the WebGPU backend,
+/// which is opt-in via the `webgpu` feature and requires an async device
+/// init, so it isn't auto-selected here).
 #[cfg(any(feature = "std", test))]
 pub fn available_backends() -> Vec<AnyBackend> {
     let mut out = vec![AnyBackend::Naive];

@@ -74,6 +74,24 @@ impl From<tpt_infer_graph::GraphError> for OnnxError {
     }
 }
 
+impl From<crate::shapes::ShapeInferError> for OnnxError {
+    fn from(e: crate::shapes::ShapeInferError) -> Self {
+        OnnxError::InvalidModel(format!("shape inference failed: {e}"))
+    }
+}
+
+/// Default maximum accepted size, in bytes, for a model passed to [`load`]/
+/// [`load_from_bytes`]. Guards against decoding an excessively large or
+/// corrupt file; use [`load_from_bytes_with_limits`] to override.
+pub const DEFAULT_MAX_MODEL_BYTES: usize = 512 * 1024 * 1024;
+
+/// Default maximum accepted total node + attribute count across the graph,
+/// checked after decoding. Bounds the work a crafted file can force.
+pub const DEFAULT_MAX_GRAPH_ITEMS: usize = 1_000_000;
+
+/// Highest ONNX opset version (default `""` domain) this parser targets.
+pub const MAX_SUPPORTED_OPSET: i64 = 17;
+
 /// Load an ONNX model from `path`.
 ///
 /// # Errors
@@ -90,25 +108,70 @@ pub fn load(path: impl AsRef<Path>) -> Result<ComputationGraph, OnnxError> {
     load_from_bytes(&bytes)
 }
 
-/// Load an ONNX model from in-memory bytes.
+/// Load an ONNX model from in-memory bytes, using [`DEFAULT_MAX_MODEL_BYTES`]
+/// and [`DEFAULT_MAX_GRAPH_ITEMS`] as resource limits.
 ///
 /// # Errors
 /// See [`load`].
 pub fn load_from_bytes(bytes: &[u8]) -> Result<ComputationGraph, OnnxError> {
+    load_from_bytes_with_limits(bytes, DEFAULT_MAX_MODEL_BYTES, DEFAULT_MAX_GRAPH_ITEMS)
+}
+
+/// Load an ONNX model from in-memory bytes, with explicit resource limits.
+///
+/// `max_bytes` bounds the size of `bytes` itself (checked before decoding).
+/// `max_graph_items` bounds the total number of nodes plus attributes in the
+/// decoded graph (checked after decoding, before further processing). Use
+/// this directly — with tighter limits — on memory-constrained targets, or
+/// to accept models larger than the defaults allow.
+///
+/// # Errors
+/// [`OnnxError::InvalidModel`] if either limit is exceeded; see [`load`] for
+/// other error cases.
+pub fn load_from_bytes_with_limits(
+    bytes: &[u8],
+    max_bytes: usize,
+    max_graph_items: usize,
+) -> Result<ComputationGraph, OnnxError> {
+    if bytes.len() > max_bytes {
+        return Err(OnnxError::InvalidModel(format!(
+            "model is {} bytes, exceeding the {max_bytes}-byte limit",
+            bytes.len()
+        )));
+    }
     let model = ModelProto::decode(bytes)?;
     let graph = model
         .graph
         .ok_or_else(|| OnnxError::InvalidModel("model has no graph".into()))?;
+    let attr_count: usize = graph.node.iter().map(|n| n.attribute.len()).sum();
+    let item_count = graph.node.len().saturating_add(attr_count);
+    if item_count > max_graph_items {
+        return Err(OnnxError::InvalidModel(format!(
+            "graph has {item_count} nodes+attributes, exceeding the {max_graph_items}-item limit"
+        )));
+    }
     graph_from_proto(&graph, model.opset_import)
 }
 
 /// Convert a decoded [`GraphProto`] into a [`ComputationGraph`].
+///
+/// # Errors
+/// [`OnnxError::InvalidModel`] if the graph has no nodes, or if `opsets`
+/// declares a default-domain opset version newer than [`MAX_SUPPORTED_OPSET`].
 pub fn graph_from_proto(
     graph: &GraphProto,
-    _opsets: Vec<OperatorSetIdProto>,
+    opsets: Vec<OperatorSetIdProto>,
 ) -> Result<ComputationGraph, OnnxError> {
     if graph.node.is_empty() {
         return Err(OnnxError::InvalidModel("graph has no nodes".into()));
+    }
+    for opset in &opsets {
+        if opset.domain.is_empty() && opset.version > MAX_SUPPORTED_OPSET {
+            return Err(OnnxError::InvalidModel(format!(
+                "unsupported opset version {} for the default domain (this parser targets opset {MAX_SUPPORTED_OPSET})",
+                opset.version
+            )));
+        }
     }
 
     let mut value_shapes: HashMap<String, Vec<usize>> = HashMap::new();
@@ -151,7 +214,13 @@ pub fn graph_from_proto(
 
     // Initializer weight inputs.
     for init in &graph.initializer {
-        let mut dims: Vec<usize> = init.dims.iter().map(|&d| d.max(0) as usize).collect();
+        if init.dims.iter().any(|&d| d < 0) {
+            return Err(OnnxError::InvalidModel(format!(
+                "initializer '{}' has a negative declared dimension",
+                init.name
+            )));
+        }
+        let mut dims: Vec<usize> = init.dims.iter().map(|&d| d as usize).collect();
         if dims.is_empty() {
             dims.push(1);
         }
@@ -160,11 +229,23 @@ pub fn graph_from_proto(
         let id = out.add_node(node)?;
         name_to_node.insert(init.name.clone(), id);
         if let Some(data) = tensor_f32(init) {
-            // Size must match; skip mismatched (e.g. raw_data empty).
-            let expected: usize = dims.iter().product();
-            if data.len() == expected {
-                out.add_initializer(Initializer::new(&init.name, &dims, data)?);
+            let expected: usize = dims
+                .iter()
+                .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+                .ok_or_else(|| {
+                    OnnxError::InvalidModel(format!(
+                        "initializer '{}' declared dimensions overflow",
+                        init.name
+                    ))
+                })?;
+            if data.len() != expected {
+                return Err(OnnxError::InvalidModel(format!(
+                    "initializer '{}' declares {expected} elements but has {}",
+                    init.name,
+                    data.len()
+                )));
             }
+            out.add_initializer(Initializer::new(&init.name, &dims, data)?);
         }
     }
 
@@ -219,7 +300,7 @@ pub fn graph_from_proto(
             .cloned();
         let dims = match declared {
             Some(d) if !d.is_empty() => d,
-            _ => infer_node_shape(&op, &in_dims, &[1]),
+            _ => infer_node_shape(&op, &in_dims, &[1])?,
         };
 
         let mut node = Node::new(out.nodes().len(), op, inputs.clone(), &dims)?;
@@ -676,5 +757,135 @@ mod tests {
         let g = load_from_bytes(&bytes).unwrap();
         assert_eq!(g.nodes()[0].dims(), &[0, 4]);
         assert_eq!(g.nodes()[1].dims(), &[0, 4]);
+    }
+
+    #[test]
+    fn oversized_model_bytes_rejected() {
+        let bytes = model(graph_of(
+            "relu",
+            vec![node(&["x"], &["y"], "relu0", "Relu")],
+            vec![f32_vi("x", &[1, 4])],
+            vec![f32_vi("y", &[1, 4])],
+        ));
+        let err = load_from_bytes_with_limits(&bytes, bytes.len() - 1, DEFAULT_MAX_GRAPH_ITEMS)
+            .unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
+    }
+
+    #[test]
+    fn oversized_graph_item_count_rejected() {
+        let bytes = model(graph_of(
+            "relu",
+            vec![node(&["x"], &["y"], "relu0", "Relu")],
+            vec![f32_vi("x", &[1, 4])],
+            vec![f32_vi("y", &[1, 4])],
+        ));
+        let err = load_from_bytes_with_limits(&bytes, DEFAULT_MAX_MODEL_BYTES, 0).unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
+    }
+
+    #[test]
+    fn unsupported_opset_version_rejected() {
+        let graph = graph_of(
+            "relu",
+            vec![node(&["x"], &["y"], "relu0", "Relu")],
+            vec![f32_vi("x", &[1, 4])],
+            vec![f32_vi("y", &[1, 4])],
+        );
+        let model = ModelProto {
+            ir_version: 8,
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: MAX_SUPPORTED_OPSET + 1,
+            }],
+            producer_name: "test".into(),
+            graph: Some(graph),
+            ..Default::default()
+        };
+        let mut bytes = Vec::new();
+        model.encode(&mut bytes).unwrap();
+        let err = load_from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
+    }
+
+    #[test]
+    fn negative_initializer_dim_rejected() {
+        let w = TensorProto {
+            dims: vec![-4, 5],
+            data_type: DataType::Float as i32,
+            float_data: vec![0.0; 20],
+            name: "w".into(),
+            ..Default::default()
+        };
+        let mut gproto = graph_of(
+            "mm",
+            vec![node(&["x", "w"], &["y"], "mm0", "MatMul")],
+            vec![f32_vi("x", &[1, 4])],
+            vec![f32_vi("y", &[1, 5])],
+        );
+        gproto.initializer = vec![w];
+        let bytes = model(gproto);
+        let err = load_from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
+    }
+
+    #[test]
+    fn mismatched_initializer_length_rejected() {
+        // Previously this silently dropped the initializer (leaving a
+        // dangling weight-input node with no bound data) instead of
+        // rejecting the malformed model.
+        let w = TensorProto {
+            dims: vec![4, 5], // expects 20 elements
+            data_type: DataType::Float as i32,
+            float_data: vec![0.0; 3],
+            name: "w".into(),
+            ..Default::default()
+        };
+        let mut gproto = graph_of(
+            "mm",
+            vec![node(&["x", "w"], &["y"], "mm0", "MatMul")],
+            vec![f32_vi("x", &[1, 4])],
+            vec![f32_vi("y", &[1, 5])],
+        );
+        gproto.initializer = vec![w];
+        let bytes = model(gproto);
+        let err = load_from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
+    }
+
+    #[test]
+    fn conv_kernel_larger_than_input_rejected() {
+        let w = TensorProto {
+            dims: vec![1, 1, 999, 999],
+            data_type: DataType::Float as i32,
+            float_data: vec![0.0; 999 * 999],
+            name: "w".into(),
+            ..Default::default()
+        };
+        let mut conv = node(&["x", "w"], &["y"], "conv", "Conv");
+        conv.attribute = vec![
+            attr_ints("strides", vec![1, 1]),
+            attr_ints("pads", vec![0, 0, 0, 0]),
+            attr_ints("kernel_shape", vec![999, 999]),
+        ];
+        // No declared shape for "y": this forces `infer_node_shape` to run
+        // conv_shape's checked geometry arithmetic instead of short-circuiting
+        // on a caller-declared output shape.
+        let unshaped_output = ValueInfoProto {
+            name: "y".into(),
+            r#type: None,
+            doc_string: String::new(),
+            metadata_props: vec![],
+        };
+        let mut gproto = graph_of(
+            "conv_bad",
+            vec![conv],
+            vec![f32_vi("x", &[1, 1, 4, 4])],
+            vec![unshaped_output],
+        );
+        gproto.initializer = vec![w];
+        let bytes = model(gproto);
+        let err = load_from_bytes(&bytes).unwrap_err();
+        assert!(matches!(err, OnnxError::InvalidModel(_)));
     }
 }

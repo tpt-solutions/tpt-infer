@@ -26,6 +26,8 @@ pub enum VisionError {
     },
     /// The channel count was zero (or otherwise unsupported).
     InvalidChannels(usize),
+    /// `width * height * channels` overflows `usize`.
+    DimensionOverflow,
     /// A [`PreprocessConfig`](crate::PreprocessConfig) `std` entry was zero.
     ZeroStd,
     /// Tensor construction failed.
@@ -43,6 +45,9 @@ impl core::fmt::Display for VisionError {
                 write!(f, "size mismatch: expected {expected} elements, got {actual}")
             }
             VisionError::InvalidChannels(ch) => write!(f, "invalid channel count: {ch}"),
+            VisionError::DimensionOverflow => {
+                f.write_str("width * height * channels overflows usize")
+            }
             VisionError::ZeroStd => f.write_str("standard deviation must be non-zero"),
             VisionError::Tensor(e) => write!(f, "tensor error: {e}"),
         }

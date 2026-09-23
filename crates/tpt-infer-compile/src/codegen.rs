@@ -148,6 +148,24 @@ fn emit_op(
             |i| quote! { 1.0f32 / (1.0f32 + (-(#i)).exp()) },
             graph,
         ),
+        // Tanh approximation, matching `tpt_infer_ops::naive::gelu` exactly
+        // (with `std`'s `f32::tanh`) so AOT-compiled output is numerically
+        // identical to the interpreted runtime.
+        Operator::Gelu => emit_unary(
+            node,
+            input_id,
+            |i| {
+                quote! {
+                    {
+                        let x: f32 = #i;
+                        const K: f32 = 0.797_884_6;
+                        const C: f32 = 0.044_715;
+                        0.5f32 * x * (1.0f32 + (K * (x + C * x * x * x)).tanh())
+                    }
+                }
+            },
+            graph,
+        ),
         Operator::Reshape { .. } | Operator::Flatten { .. } => emit_reshape(graph, node, input_id),
         Operator::Conv2d { strides, padding } => {
             emit_conv2d(graph, node, input_id, *strides, *padding)

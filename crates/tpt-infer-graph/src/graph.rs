@@ -37,6 +37,8 @@ pub enum GraphError {
         /// Actual element count.
         actual: usize,
     },
+    /// The product of the declared dimensions overflows `usize`.
+    DimensionOverflow,
     /// The graph contains a cycle.
     CycleDetected,
 }
@@ -56,6 +58,9 @@ impl core::fmt::Display for GraphError {
                     f,
                     "size mismatch: expected {expected} elements, got {actual}"
                 )
+            }
+            GraphError::DimensionOverflow => {
+                f.write_str("product of declared dimensions overflows usize")
             }
             GraphError::CycleDetected => f.write_str("graph contains a cycle"),
         }
@@ -233,6 +238,7 @@ impl Initializer {
     ///
     /// # Errors
     /// - [`GraphError::RankTooLarge`] if `dims.len()` exceeds [`MAX_RANK`]
+    /// - [`GraphError::DimensionOverflow`] if the product of `dims` overflows `usize`
     /// - [`GraphError::SizeMismatch`] if `data.len()` differs from the product of `dims`
     pub fn new(
         name: impl Into<String>,
@@ -242,7 +248,10 @@ impl Initializer {
         if dims.len() > MAX_RANK {
             return Err(GraphError::RankTooLarge { rank: dims.len() });
         }
-        let expected: usize = dims.iter().product();
+        let expected: usize = dims
+            .iter()
+            .try_fold(1usize, |acc, &d| acc.checked_mul(d))
+            .ok_or(GraphError::DimensionOverflow)?;
         if data.len() != expected {
             return Err(GraphError::SizeMismatch {
                 expected,
@@ -592,6 +601,15 @@ mod tests {
         let init = Initializer::new("w", &[2, 3], alloc::vec![1.0; 6]).unwrap();
         assert_eq!(init.dims(), &[2, 3]);
         assert_eq!(init.data.len(), 6);
+    }
+
+    #[test]
+    fn initializer_dimension_overflow_rejected() {
+        // Adversarial/malformed dims whose product overflows `usize` must be
+        // a hard error, not a silently wrapped value that could defeat the
+        // length check as a validation gate.
+        let err = Initializer::new("w", &[usize::MAX, 2], alloc::vec![0.0; 1]).unwrap_err();
+        assert_eq!(err, GraphError::DimensionOverflow);
     }
 
     #[test]

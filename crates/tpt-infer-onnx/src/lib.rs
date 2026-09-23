@@ -19,6 +19,9 @@ pub mod load;
 pub mod registry;
 pub mod shapes;
 
-pub use load::{graph_from_proto, load, load_from_bytes, OnnxError, proto};
+pub use load::{
+    graph_from_proto, load, load_from_bytes, load_from_bytes_with_limits, proto, OnnxError,
+    DEFAULT_MAX_GRAPH_ITEMS, DEFAULT_MAX_MODEL_BYTES, MAX_SUPPORTED_OPSET,
+};
 pub use registry::{is_native, map_op};
 pub use shapes::{infer_node_shape, infer_shapes, ShapeInferError};

@@ -46,7 +46,7 @@ pub fn infer_shapes(
             .iter()
             .map(|&i| out.get(&i).cloned().unwrap_or_default())
             .collect();
-        let dims = infer_node_shape(&node.operator, &in_dims, node.dims());
+        let dims = infer_node_shape(&node.operator, &in_dims, node.dims())?;
         out.insert(id, dims);
     }
     Ok(out)
@@ -56,18 +56,21 @@ pub fn infer_shapes(
 ///
 /// Falls back to `fallback` (the node's current dims) when inference is not
 /// possible (unknown inputs or unsupported op).
+///
+/// # Errors
+/// [`ShapeInferError::InvalidGeometry`] if a convolution/pooling kernel does
+/// not fit within its (padded) input — this can only happen with
+/// attacker-controlled or otherwise malformed `dims`/`kernel_shape`/`pads`.
 pub fn infer_node_shape(
     op: &Operator,
     inputs: &[Vec<usize>],
     fallback: &[usize],
-) -> Vec<usize> {
+) -> Result<Vec<usize>, ShapeInferError> {
     match op {
-        Operator::Input => fallback.to_vec(),
-        Operator::MatMul => matmul_shape(inputs, fallback),
+        Operator::Input => Ok(fallback.to_vec()),
+        Operator::MatMul => Ok(matmul_shape(inputs, fallback)),
         Operator::Conv2d {
-            strides,
-            padding,
-            ..
+            strides, padding, ..
         } => conv_shape(inputs, *strides, *padding, fallback),
         Operator::Add
         | Operator::Sub
@@ -77,38 +80,31 @@ pub fn infer_node_shape(
         | Operator::Sigmoid
         | Operator::Gelu
         | Operator::BatchNorm { .. }
-        | Operator::Custom(_) => inputs
+        | Operator::Custom(_) => Ok(inputs
             .first()
             .filter(|d| !d.is_empty())
             .cloned()
-            .unwrap_or_else(|| fallback.to_vec()),
-        Operator::Softmax { .. } => inputs
+            .unwrap_or_else(|| fallback.to_vec())),
+        Operator::Softmax { .. } => Ok(inputs
             .first()
             .filter(|d| !d.is_empty())
             .cloned()
-            .unwrap_or_else(|| fallback.to_vec()),
-        Operator::Reshape { shape, rank, .. } => {
-            if *rank > 0 {
-                shape[..*rank].to_vec()
-            } else {
-                fallback.to_vec()
-            }
-        }
+            .unwrap_or_else(|| fallback.to_vec())),
+        Operator::Reshape { shape, rank, .. } => Ok(if *rank > 0 {
+            shape[..*rank].to_vec()
+        } else {
+            fallback.to_vec()
+        }),
         Operator::Flatten { axis } => {
             let Some(inp) = inputs.first().filter(|d| !d.is_empty()) else {
-                return fallback.to_vec();
+                return Ok(fallback.to_vec());
             };
             let rank = inp.len() as i32;
             let ax = if *axis < 0 { rank + *axis } else { *axis };
             let ax = ax.max(0) as usize;
             let outer: usize = inp[..ax.min(inp.len())].iter().product();
             let inner: usize = inp[ax.min(inp.len())..].iter().product();
-            if outer == 0 || inner == 0 {
-                // dynamic dim present
-                vec![outer, inner]
-            } else {
-                vec![outer, inner]
-            }
+            Ok(vec![outer, inner])
         }
         Operator::MaxPool2d {
             kernel,
@@ -122,17 +118,17 @@ pub fn infer_node_shape(
         } => pool_shape(inputs, *kernel, *strides, *padding, fallback),
         Operator::Concat { axis } => {
             let Some(first) = inputs.first().filter(|d| !d.is_empty()) else {
-                return fallback.to_vec();
+                return Ok(fallback.to_vec());
             };
             if inputs.len() == 1 {
-                return first.clone();
+                return Ok(first.clone());
             }
             let rank = first.len() as i32;
             let ax = if *axis < 0 { rank + *axis } else { *axis };
             let ax = ax.max(0) as usize;
             let mut out = first.clone();
             if ax >= out.len() {
-                return out;
+                return Ok(out);
             }
             let mut sum = 0usize;
             for d in inputs {
@@ -141,26 +137,26 @@ pub fn infer_node_shape(
                 }
             }
             out[ax] = sum;
-            out
+            Ok(out)
         }
         Operator::Transpose { perm, rank, .. } => {
             let Some(inp) = inputs.first().filter(|d| !d.is_empty()) else {
-                return fallback.to_vec();
+                return Ok(fallback.to_vec());
             };
             if *rank == inp.len() {
                 let mut out = vec![0; inp.len()];
                 for i in 0..*rank {
                     out[i] = inp[perm[i]];
                 }
-                out
+                Ok(out)
             } else {
                 // default reverse
                 let mut out = inp.clone();
                 out.reverse();
-                out
+                Ok(out)
             }
         }
-        _ => fallback.to_vec(),
+        _ => Ok(fallback.to_vec()),
     }
 }
 
@@ -200,19 +196,39 @@ fn broadcast_dims(a: &[usize], b: &[usize]) -> Vec<usize> {
     out
 }
 
+/// Compute a single spatial output dimension for conv/pool:
+/// `(input + 2*pad - kernel) / stride + 1`, using checked arithmetic
+/// throughout since every operand can originate from an attacker-controlled
+/// ONNX file.
+fn conv_out_dim(
+    input: usize,
+    pad: usize,
+    kernel: usize,
+    stride: usize,
+) -> Result<usize, ShapeInferError> {
+    let padded = pad
+        .checked_mul(2)
+        .and_then(|p| input.checked_add(p))
+        .ok_or(ShapeInferError::InvalidGeometry)?;
+    let numerator = padded
+        .checked_sub(kernel)
+        .ok_or(ShapeInferError::InvalidGeometry)?;
+    Ok(numerator / stride + 1)
+}
+
 fn conv_shape(
     inputs: &[Vec<usize>],
     strides: [usize; 2],
     padding: [usize; 2],
     fallback: &[usize],
-) -> Vec<usize> {
+) -> Result<Vec<usize>, ShapeInferError> {
     if inputs.len() < 2 {
-        return fallback.to_vec();
+        return Ok(fallback.to_vec());
     }
     let x = &inputs[0];
     let w = &inputs[1];
     if x.len() != 4 || w.len() != 4 {
-        return fallback.to_vec();
+        return Ok(fallback.to_vec());
     }
     let n = x[0];
     let oc = w[0];
@@ -221,14 +237,14 @@ fn conv_shape(
     let oh = if x[2] == 0 {
         0
     } else {
-        (x[2] + 2 * ph - w[2]) / sh + 1
+        conv_out_dim(x[2], ph, w[2], sh)?
     };
     let ow = if x[3] == 0 {
         0
     } else {
-        (x[3] + 2 * pw - w[3]) / sw + 1
+        conv_out_dim(x[3], pw, w[3], sw)?
     };
-    vec![n, oc, oh, ow]
+    Ok(vec![n, oc, oh, ow])
 }
 
 fn pool_shape(
@@ -237,19 +253,19 @@ fn pool_shape(
     strides: [usize; 2],
     padding: [usize; 2],
     fallback: &[usize],
-) -> Vec<usize> {
+) -> Result<Vec<usize>, ShapeInferError> {
     let Some(x) = inputs.first().filter(|d| d.len() == 4) else {
-        return fallback.to_vec();
+        return Ok(fallback.to_vec());
     };
     if kernel[0] == 0 {
         // GlobalAveragePool → [N, C, 1, 1]
-        return vec![x[0], x[1], 1, 1];
+        return Ok(vec![x[0], x[1], 1, 1]);
     }
     let (sh, sw) = (strides[0].max(1), strides[1].max(1));
     let (ph, pw) = (padding[0], padding[1]);
-    let oh = (x[2] + 2 * ph - kernel[0]) / sh + 1;
-    let ow = (x[3] + 2 * pw - kernel[1]) / sw + 1;
-    vec![x[0], x[1], oh, ow]
+    let oh = conv_out_dim(x[2], ph, kernel[0], sh)?;
+    let ow = conv_out_dim(x[3], pw, kernel[1], sw)?;
+    Ok(vec![x[0], x[1], oh, ow])
 }
 
 /// Errors from the shape inference pass.
@@ -261,6 +277,10 @@ pub enum ShapeInferError {
         /// Node id whose input shape was missing.
         node: usize,
     },
+    /// A convolution/pooling kernel does not fit its (padded) input, or the
+    /// geometry arithmetic would otherwise overflow. This can only happen
+    /// with malformed or adversarial `dims`/`kernel_shape`/`pads`.
+    InvalidGeometry,
 }
 
 impl std::fmt::Display for ShapeInferError {
@@ -268,6 +288,12 @@ impl std::fmt::Display for ShapeInferError {
         match self {
             ShapeInferError::UnknownInput { node } => {
                 write!(f, "unknown input shape for node {node}")
+            }
+            ShapeInferError::InvalidGeometry => {
+                write!(
+                    f,
+                    "convolution/pooling kernel does not fit the (padded) input dimensions"
+                )
             }
         }
     }
@@ -281,11 +307,7 @@ mod tests {
 
     #[test]
     fn matmul_shapes() {
-        let d = infer_node_shape(
-            &Operator::MatMul,
-            &[vec![1, 784], vec![784, 10]],
-            &[],
-        );
+        let d = infer_node_shape(&Operator::MatMul, &[vec![1, 784], vec![784, 10]], &[]).unwrap();
         assert_eq!(d, vec![1, 10]);
     }
 
@@ -298,24 +320,54 @@ mod tests {
             },
             &[vec![1, 3, 224, 224], vec![8, 3, 3, 3]],
             &[],
-        );
+        )
+        .unwrap();
         assert_eq!(d, vec![1, 8, 224, 224]);
     }
 
     #[test]
     fn flatten_shapes() {
-        let d = infer_node_shape(&Operator::Flatten { axis: 1 }, &[vec![1, 3, 32, 32]], &[]);
+        let d =
+            infer_node_shape(&Operator::Flatten { axis: 1 }, &[vec![1, 3, 32, 32]], &[]).unwrap();
         assert_eq!(d, vec![1, 3072]);
     }
 
     #[test]
     fn dynamic_batch_stays_zero() {
         // dim 0 = dynamic
-        let d = infer_node_shape(
-            &Operator::Relu,
-            &[vec![0, 128]],
-            &[],
-        );
+        let d = infer_node_shape(&Operator::Relu, &[vec![0, 128]], &[]).unwrap();
         assert_eq!(d, vec![0, 128]);
+    }
+
+    #[test]
+    fn conv_kernel_larger_than_input_is_rejected() {
+        // A malicious/malformed ONNX file could declare a kernel far larger
+        // than the (padded) input; this must be a hard error, not a
+        // debug-mode panic or a release-mode `usize` wraparound.
+        let err = infer_node_shape(
+            &Operator::Conv2d {
+                strides: [1, 1],
+                padding: [0, 0],
+            },
+            &[vec![1, 3, 4, 4], vec![8, 3, 999, 999]],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err, ShapeInferError::InvalidGeometry);
+    }
+
+    #[test]
+    fn pool_kernel_larger_than_input_is_rejected() {
+        let err = infer_node_shape(
+            &Operator::MaxPool2d {
+                kernel: [999, 999],
+                strides: [1, 1],
+                padding: [0, 0],
+            },
+            &[vec![1, 3, 4, 4]],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err, ShapeInferError::InvalidGeometry);
     }
 }

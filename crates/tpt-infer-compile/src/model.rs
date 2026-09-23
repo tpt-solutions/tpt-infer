@@ -155,11 +155,11 @@ impl CompiledModel {
 /// - Exactly one marked output ([`ComputationGraph::mark_output`] /
 ///   [`ComputationGraph::infer_outputs`]).
 /// - Operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands),
-///   `Relu`, `Sigmoid`, `Reshape`/`Flatten`, `Conv2d` (direct/naive-loop,
-///   optional per-channel bias), `Softmax` (last-axis only, matching
-///   `tpt-infer-runtime`'s own restriction), `MaxPool2d`/`AveragePool2d`,
-///   `BatchNorm`, `Concat`, and `Transpose`. Anything else (`Gelu`,
-///   `Operator::Custom`, ...) is reported as
+///   `Relu`, `Sigmoid`, `Gelu`, `Reshape`/`Flatten`, `Conv2d`
+///   (direct/naive-loop, optional per-channel bias), `Softmax` (last-axis
+///   only, matching `tpt-infer-runtime`'s own restriction),
+///   `MaxPool2d`/`AveragePool2d`, `BatchNorm`, `Concat`, and `Transpose`.
+///   Anything else (`Operator::Custom`, ...) is reported as
 ///   [`CompileError::UnsupportedOperator`] rather than silently skipped or
 ///   panicking.
 ///
@@ -347,9 +347,32 @@ mod tests {
 
     #[test]
     fn unsupported_operator_is_reported() {
-        // `Gelu` has no codegen (only `Relu`/`Sigmoid` do); it's a
-        // genuinely unmapped operator, unlike `Softmax` which this crate
-        // now generates code for (last axis only).
+        // `Operator::Custom` (ONNX ops this crate doesn't map to a native
+        // `Operator` variant) is genuinely unmapped in codegen.
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
+            .unwrap();
+        let y = g
+            .add_node(
+                Node::new(1, Operator::Custom("LayerNormalization".into()), vec![x], &[1, 4])
+                    .unwrap(),
+            )
+            .unwrap();
+        g.mark_output(y).unwrap();
+        assert_eq!(
+            aot_compile(&g).unwrap_err(),
+            CompileError::UnsupportedOperator {
+                name: "Custom".to_string(),
+                node: 1
+            }
+        );
+    }
+
+    #[test]
+    fn gelu_matches_interpreted_runtime() {
+        // AOT-compiled Gelu must be numerically identical to the naive
+        // backend's tanh-approximation kernel (`tpt_infer_ops::naive::gelu`).
         let mut g = ComputationGraph::new();
         let x = g
             .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
@@ -358,13 +381,26 @@ mod tests {
             .add_node(Node::new(1, Operator::Gelu, vec![x], &[1, 4]).unwrap())
             .unwrap();
         g.mark_output(y).unwrap();
-        assert_eq!(
-            aot_compile(&g).unwrap_err(),
-            CompileError::UnsupportedOperator {
-                name: "Gelu".to_string(),
-                node: 1
-            }
-        );
+        let compiled = aot_compile(&g).unwrap();
+        let source = compiled.source();
+        assert!(source.contains("tanh"));
+
+        let input = [-2.0f32, -0.5, 0.5, 2.0];
+        let mut expected = [0.0f32; 4];
+        tpt_infer_ops::naive::gelu(&input, &mut expected).unwrap();
+
+        // Evaluate the tanh approximation directly, mirroring the generated
+        // expression, since the test harness doesn't compile-and-link the
+        // generated source at test time.
+        let k = 0.797_884_6f32;
+        let c = 0.044_715f32;
+        let got: Vec<f32> = input
+            .iter()
+            .map(|&x| 0.5f32 * x * (1.0f32 + (k * (x + c * x * x * x)).tanh()))
+            .collect();
+        for (g, e) in got.iter().zip(expected.iter()) {
+            assert!((g - e).abs() < 1e-6, "got {g}, expected {e}");
+        }
     }
 
     #[test]

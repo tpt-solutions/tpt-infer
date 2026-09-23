@@ -46,7 +46,10 @@ impl ImageSource for RawRgbImage<'_> {
     }
 
     fn to_rgb8(&self) -> Result<Vec<u8>, VisionError> {
-        let expected = self.width as usize * self.height as usize * 3;
+        let expected = (self.width as usize)
+            .checked_mul(self.height as usize)
+            .and_then(|wh| wh.checked_mul(3))
+            .ok_or(VisionError::DimensionOverflow)?;
         if self.data.len() != expected {
             return Err(VisionError::SizeMismatch {
                 expected,
@@ -91,6 +94,17 @@ mod tests {
                 actual: 5
             }
         );
+    }
+
+    #[test]
+    fn raw_rgb_image_dimension_overflow_rejected() {
+        // On a 32-bit `usize`, width * height * 3 can overflow for two large
+        // (but individually valid `u32`) dimensions; this must be a hard
+        // error rather than a silently wrapped `expected` that could defeat
+        // the length check.
+        let data = [0u8; 6];
+        let img = RawRgbImage::new(&data, u32::MAX, u32::MAX);
+        assert_eq!(img.to_rgb8().unwrap_err(), VisionError::DimensionOverflow);
     }
 
     #[cfg(feature = "std")]
