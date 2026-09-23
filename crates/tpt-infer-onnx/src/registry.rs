@@ -2,7 +2,7 @@
 
 use tpt_infer_graph::Operator;
 
-/// Map an ONNX operator type name to a [`Graph`] operator.
+/// Map an ONNX operator type name to a `tpt_infer_graph::Operator`.
 ///
 /// Returns [`Operator::Custom`] (preserving the original name) for ops this
 /// crate does not model natively, so unknown ops still load.

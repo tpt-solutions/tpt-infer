@@ -22,7 +22,7 @@
 //!
 //! - `std` (default): runtime CPU feature detection and native `f32::exp`/`tanh`.
 //! - `avx512`: compile the AVX-512 backend (it is still runtime-detected).
-//! - `webgpu`: compile the WebGPU backend ([`WebGpuBackend::new`] acquires a
+//! - `webgpu`: compile the WebGPU backend (`WebGpuBackend::new` acquires a
 //!   real `wgpu::Device`; it is not part of [`select_backend`]'s enum
 //!   dispatch since construction is async/fallible).
 //!

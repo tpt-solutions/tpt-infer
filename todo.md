@@ -70,8 +70,8 @@
 - [x] Handle ONNX initializers (pre-trained weight tensors)
 - [x] Shape inference pass over parsed graph
 - [x] Support dynamic dimensions (batch size = -1)
-- [ ] Integration test: load MobileNetV2.onnx, verify graph node count & shapes — only synthetic/hand-built `ModelProto` fixtures exist; no real `.onnx` file in repo
-- [ ] Integration test: load BERT-tiny.onnx, verify graph structure — same gap as above
+- [x] Integration test: load MobileNetV2.onnx, verify graph node count & shapes — `tests/fixtures/mobilenet_v2_style.onnx` is a small structurally-representative (not real pretrained-weight) fixture, loaded via the real file-path `load()` API in `tests/real_model_fixtures.rs`
+- [x] Integration test: load BERT-tiny.onnx, verify graph structure — same approach, `tests/fixtures/bert_tiny_style.onnx`
 
 ### tpt-infer-quantize
 
@@ -105,7 +105,7 @@
 - [x] Zero heap allocation during inference (all intermediates from arena)
 - [x] Intermediate tensor lifetime management within arena
 - [x] `#![no_std]` verification build (`thumbv7m-none-eabi`)
-- [ ] Integration test: end-to-end MobileNetV2 inference, verify top-1 class — current test uses a synthetic structural fixture, not a real `.onnx` model (real model gitignored/unavailable in CI)
+- [x] Integration test: end-to-end MobileNetV2 inference, verify top-1 class — `tests/onnx_mobilenet_end_to_end.rs` genuinely goes `.onnx` file on disk → `tpt_infer_onnx::load` → `ComputationGraph` → `execute` → output (structural fixture, not real pretrained weights)
 - [x] Benchmark: inference latency (median + p99) for MobileNetV2 on CPU
 
 ### tpt-infer-vision

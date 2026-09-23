@@ -13,7 +13,7 @@
 //!
 //! This is a best-effort pass, not a full constant-propagation engine: only
 //! the operators [`crate::codegen`] itself generates code for are folded
-//! (see [`try_eval`]). Anything else simply is not folded — its inputs (if
+//! (see `try_eval`). Anything else simply is not folded — its inputs (if
 //! constant) are still folded, so a later operator can still short-circuit
 //! once it reaches a foldable node.
 

@@ -5,7 +5,7 @@
 //! enabled and supported) over AVX2 on x86_64, NEON on aarch64, SIMD128 on
 //! wasm32, and the naive scalar reference otherwise.
 //!
-//! [`crate::webgpu::WebGpuBackend`] (feature `webgpu`) is deliberately not a
+//! `crate::webgpu::WebGpuBackend` (feature `webgpu`) is deliberately not a
 //! variant of [`AnyBackend`]: unlike every other backend here, it wraps a
 //! real `wgpu::Device`/`Queue` pair, so it can't be a zero-sized, `Copy`,
 //! unconditionally-constructible value, and acquiring one is async and

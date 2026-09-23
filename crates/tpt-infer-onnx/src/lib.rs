@@ -2,7 +2,7 @@
 //!
 //! Decodes `ModelProto` with [`prost`], maps opset-17 operators onto
 //! [`tpt_infer_graph::Operator`], attaches initializers, and runs a shape
-//! inference pass — producing a [`ComputationGraph`] ready for the AOT
+//! inference pass — producing a `ComputationGraph` ready for the AOT
 //! compiler and runtime.
 //!
 //! # Example

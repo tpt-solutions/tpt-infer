@@ -12,10 +12,10 @@
 //! A typical flow through the re-exported API looks like:
 //!
 //! 1. **Load or build** a [`ComputationGraph`](prelude::ComputationGraph) —
-//!    either [`prelude::load`] an ONNX file (feature `onnx`) or assemble one
+//!    either `prelude::load` an ONNX file (feature `onnx`) or assemble one
 //!    programmatically with [`prelude::GraphBuilder`] (always available).
-//! 2. **Preprocess** image inputs with [`prelude::preprocess_image`] /
-//!    [`prelude::preprocess_raw_rgb`] (feature `vision`, opt-in).
+//! 2. **Preprocess** image inputs with `prelude::preprocess_image` /
+//!    `prelude::preprocess_raw_rgb` (feature `vision`, opt-in).
 //! 3. **Compile ahead-of-time** with [`prelude::aot_compile`] (feature
 //!    `compile`) to get self-contained generated Rust source, or **execute**
 //!    the graph directly with [`prelude::execute`] / [`prelude::execute_graph`]
@@ -24,7 +24,7 @@
 //! 4. **Post-process** the output tensor with [`prelude::argmax`] for
 //!    top-1 classification.
 //!
-//! Optionally, [`prelude::ptq`] (feature `quantize`, opt-in) quantizes a
+//! Optionally, `prelude::ptq` (feature `quantize`, opt-in) quantizes a
 //! graph's weights ahead of either path.
 //!
 //! # Feature flags
@@ -33,11 +33,11 @@
 //! |---------|---------|---------|
 //! | `ops-cpu` | yes | [`prelude::Backend`], [`prelude::NaiveBackend`], [`prelude::select_backend`] |
 //! | `ops-webgpu` | no | WebGPU backend stub (implies `ops-cpu`) |
-//! | `onnx` | yes | [`prelude::load`] — parse `.onnx` files into a [`prelude::ComputationGraph`] |
+//! | `onnx` | yes | `prelude::load` — parse `.onnx` files into a [`prelude::ComputationGraph`] |
 //! | `compile` | yes | [`prelude::aot_compile`] — graph-to-Rust AOT codegen |
 //! | `runtime` | yes | [`prelude::execute`] / [`prelude::execute_graph`] / [`prelude::argmax`] — interpreted graph execution |
-//! | `vision` | no | [`prelude::preprocess_image`] / [`prelude::preprocess_raw_rgb`] — image preprocessing |
-//! | `quantize` | no | [`prelude::ptq`] — post-training INT8/INT4 quantization |
+//! | `vision` | no | `prelude::preprocess_image` / `prelude::preprocess_raw_rgb` — image preprocessing |
+//! | `quantize` | no | `prelude::ptq` — post-training INT8/INT4 quantization |
 //!
 //! `default = ["ops-cpu", "onnx", "compile", "runtime"]`: everything needed
 //! to load an ONNX model and run it (interpreted or AOT-compiled) on the

@@ -2,7 +2,7 @@
 //! so shape mismatches are compile errors rather than runtime panics.
 //!
 //! Shapes are modelled with the rank-2 marker [`Sh<M, K>`] for dense layers
-//! (matmul / add / activations). The dynamic [`ComputationGraph`](crate::ComputationGraph)
+//! (matmul / add / activations). The dynamic [`ComputationGraph`]
 //! produced by [`GraphBuilder::into_graph`] supports arbitrary ranks up to
 //! `tpt_infer_core::MAX_RANK`; operators whose output shape involves division
 //! or multiplication of attribute values (e.g. `Conv2d`, rank-4 `Flatten`)
@@ -21,7 +21,7 @@ use crate::operator::Operator;
 /// A tensor shape known entirely at compile time.
 ///
 /// Implementors expose their rank, element count, and a
-/// [`Shape`](tpt_infer_core::Shape) conversion as associated constants.
+/// `Shape` conversion as associated constants.
 pub trait ShapeMarker {
     /// Number of dimensions.
     const RANK: usize;

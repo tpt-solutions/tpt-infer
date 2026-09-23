@@ -16,7 +16,7 @@
 //!
 //! Every generated loop bound is known at compile time (that is the whole
 //! point of `tpt-infer-graph`'s shape-carrying nodes). Dimensions of size
-//! [`UNROLL_THRESHOLD`] or smaller are unrolled directly into repeated
+//! `UNROLL_THRESHOLD` or smaller are unrolled directly into repeated
 //! straight-line statements instead of a `for` loop; larger dimensions are
 //! emitted as ordinary `for` loops with a compile-time-constant bound, which
 //! LLVM is free to unroll itself at the chosen optimization level. This is a
@@ -317,7 +317,7 @@ fn usize_lit(v: usize) -> TokenStream {
 }
 
 /// Runs `body` for each index `0..bound`, either fully unrolled (bound <=
-/// [`UNROLL_THRESHOLD`]) with integer literals, or as a single `for #var in
+/// `UNROLL_THRESHOLD`) with integer literals, or as a single `for #var in
 /// 0..bound` loop with `var` as the index identifier.
 fn for_or_unroll(
     var: &str,

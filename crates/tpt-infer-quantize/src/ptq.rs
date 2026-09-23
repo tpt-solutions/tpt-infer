@@ -1,7 +1,7 @@
 //! Post-training quantization (PTQ) pipeline.
 //!
-//! Walks a [`ComputationGraph`] in topological order, finds `MatMul` /
-//! `Conv2d` nodes whose weights are float [`Initializer`]s, and quantizes
+//! Walks a `ComputationGraph` in topological order, finds `MatMul` /
+//! `Conv2d` nodes whose weights are float `Initializer`s, and quantizes
 //! those weights (per-tensor or per-channel, symmetric by default).
 
 use std::collections::HashMap;

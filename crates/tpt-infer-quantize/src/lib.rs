@@ -2,7 +2,7 @@
 //!
 //! - [`quant`]: f32 → INT8/INT4 (symmetric & asymmetric, per-tensor & per-channel)
 //! - [`dequant`]: INT8/INT4 → f32
-//! - [`ptq`]: post-training quantization pipeline over a [`ComputationGraph`]
+//! - [`ptq()`]: post-training quantization pipeline over a `tpt_infer_graph::ComputationGraph`
 //!
 //! # Example
 //! ```
