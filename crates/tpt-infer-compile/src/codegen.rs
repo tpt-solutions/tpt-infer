@@ -149,11 +149,65 @@ fn emit_op(
             graph,
         ),
         Operator::Reshape { .. } | Operator::Flatten { .. } => emit_reshape(graph, node, input_id),
+        Operator::Conv2d { strides, padding } => {
+            emit_conv2d(graph, node, input_id, *strides, *padding)
+        }
+        Operator::Softmax { axis } => emit_softmax(graph, node, input_id, *axis),
+        Operator::MaxPool2d {
+            kernel,
+            strides,
+            padding,
+        } => emit_pool(
+            graph,
+            node,
+            input_id,
+            PoolKind::Max,
+            *kernel,
+            *strides,
+            *padding,
+        ),
+        Operator::AveragePool2d {
+            kernel,
+            strides,
+            padding,
+        } => emit_pool(
+            graph,
+            node,
+            input_id,
+            PoolKind::Average,
+            *kernel,
+            *strides,
+            *padding,
+        ),
+        Operator::BatchNorm { epsilon } => emit_batch_norm(graph, node, input_id, *epsilon),
+        Operator::Concat { axis } => emit_concat(graph, node, input_id, *axis),
+        Operator::Transpose { perm, rank } => {
+            emit_transpose(graph, node, input_id, &perm[..*rank], *rank)
+        }
         other => Err(CompileError::UnsupportedOperator {
             name: other.name().to_string(),
             node: node.id,
         }),
     }
+}
+
+/// Which reduction [`emit_pool`] generates: running max, or a running sum
+/// plus count for the mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PoolKind {
+    /// [`Operator::MaxPool2d`].
+    Max,
+    /// [`Operator::AveragePool2d`].
+    Average,
+}
+
+/// Row-major strides for `dims` (`strides[i] = product(dims[i+1..])`).
+fn row_major_strides(dims: &[usize]) -> Vec<usize> {
+    let mut strides = std::vec![1usize; dims.len()];
+    for i in (0..dims.len().saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * dims[i + 1];
+    }
+    strides
 }
 
 fn producer_dims(graph: &ComputationGraph, id: usize) -> Result<&[usize], CompileError> {
@@ -311,6 +365,558 @@ fn emit_reshape(
     })
 }
 
+/// `Conv2d`: direct (non-im2col) NCHW convolution, matching
+/// `NaiveBackend::conv2d`'s accumulation order and padding/stride
+/// conventions, plus an optional bias input (`node.inputs[2]`) broadcast
+/// per output channel. `tpt_infer_runtime::exec` adds the bias via
+/// `kernels::add_inplace_broadcast`, which uses numpy right-aligned
+/// broadcasting against the rank-4 `[n, oc, oh, ow]` output — so only a
+/// `[1, oc, 1, 1]` bias actually broadcasts onto the channel axis (a flat
+/// `[oc]` bias would right-align against the *width* axis instead and be
+/// rejected by the runtime, so this compiler rejects it too rather than
+/// generating code that would disagree with the interpreted reference).
+fn emit_conv2d(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    strides: [usize; 2],
+    padding: [usize; 2],
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() != 2 && node.inputs.len() != 3 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let x_id = node.inputs[0];
+    let w_id = node.inputs[1];
+    let x_dims = producer_dims(graph, x_id)?;
+    let w_dims = producer_dims(graph, w_id)?;
+    if x_dims.len() != 4 {
+        return Err(CompileError::UnsupportedRank {
+            node: x_id,
+            op: "Conv2d",
+            rank: x_dims.len(),
+        });
+    }
+    if w_dims.len() != 4 {
+        return Err(CompileError::UnsupportedRank {
+            node: w_id,
+            op: "Conv2d",
+            rank: w_dims.len(),
+        });
+    }
+    let (n, c, h, w) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
+    let (oc, c2, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
+    if c != c2 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let (sh, sw) = (strides[0], strides[1]);
+    let (ph, pw) = (padding[0], padding[1]);
+    if sh == 0 || sw == 0 || kh == 0 || kw == 0 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let padded_h = h + 2 * ph;
+    let padded_w = w + 2 * pw;
+    if padded_h < kh || padded_w < kw {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let oh = (padded_h - kh) / sh + 1;
+    let ow = (padded_w - kw) / sw + 1;
+    if node.dims() != [n, oc, oh, ow].as_slice() {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+
+    let bias_id = node.inputs.get(2).copied();
+    if let Some(bid) = bias_id {
+        let bd = producer_dims(graph, bid)?;
+        let ok = bd == [1, oc, 1, 1].as_slice();
+        if !ok {
+            return Err(CompileError::UnsupportedRank {
+                node: bid,
+                op: "Conv2d bias",
+                rank: bd.len(),
+            });
+        }
+    }
+
+    let out = var_ident(node.id);
+    let xr = var_ref(x_id, input_id);
+    let wr = var_ref(w_id, input_id);
+    let len = usize_lit(n * oc * oh * ow);
+    let c_lit = usize_lit(c);
+    let h_lit = usize_lit(h);
+    let w_lit = usize_lit(w);
+    let kh_lit = usize_lit(kh);
+    let kw_lit = usize_lit(kw);
+    let oh_lit = usize_lit(oh);
+    let ow_lit = usize_lit(ow);
+    let oc_lit = usize_lit(oc);
+    let sh_lit = usize_lit(sh);
+    let sw_lit = usize_lit(sw);
+    let ph_lit = usize_lit(ph);
+    let pw_lit = usize_lit(pw);
+
+    let body = for_or_unroll("ni", n, |ni| {
+        for_or_unroll("oi", oc, |oi| {
+            let acc_init = match bias_id {
+                Some(bid) => {
+                    let br = var_ref(bid, input_id);
+                    quote! { #br[(#oi)] }
+                }
+                None => quote! { 0.0f32 },
+            };
+            for_or_unroll("oy", oh, |oy| {
+                for_or_unroll("ox", ow, |ox| {
+                    let inner = for_or_unroll("ci", c, |ci| {
+                        for_or_unroll("ky", kh, |ky| {
+                            for_or_unroll("kx", kw, |kx| {
+                                quote! {
+                                    {
+                                        let y = (#oy) * #sh_lit + (#ky);
+                                        let x = (#ox) * #sw_lit + (#kx);
+                                        if y >= #ph_lit && y - #ph_lit < #h_lit && x >= #pw_lit && x - #pw_lit < #w_lit {
+                                            let iy = y - #ph_lit;
+                                            let ix = x - #pw_lit;
+                                            let in_idx = (((#ni) * #c_lit + (#ci)) * #h_lit + iy) * #w_lit + ix;
+                                            let w_idx = (((#oi) * #c_lit + (#ci)) * #kh_lit + (#ky)) * #kw_lit + (#kx);
+                                            acc += #xr[in_idx] * #wr[w_idx];
+                                        }
+                                    }
+                                }
+                            })
+                        })
+                    });
+                    quote! {
+                        {
+                            let mut acc: f32 = #acc_init;
+                            #inner
+                            let out_idx = (((#ni) * #oc_lit + (#oi)) * #oh_lit + (#oy)) * #ow_lit + (#ox);
+                            #out[out_idx] = acc;
+                        }
+                    }
+                })
+            })
+        })
+    });
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #body
+    })
+}
+
+/// `Softmax`: max-subtract, exp, normalize. Only generates code when `axis`
+/// (after negative-index normalization) is the last dimension, mirroring
+/// `tpt_infer_runtime`'s `Backend::softmax` restriction (see `exec.rs`) —
+/// normalizing any other axis would require a transpose-like gather this
+/// compiler does not emit for `Softmax` itself.
+fn emit_softmax(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    axis: i32,
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() != 1 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let a_id = node.inputs[0];
+    let a_dims = producer_dims(graph, a_id)?;
+    if a_dims.is_empty() {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let rank = a_dims.len() as i32;
+    let normalized = if axis < 0 { axis + rank } else { axis };
+    if normalized != rank - 1 {
+        return Err(CompileError::UnsupportedRank {
+            node: node.id,
+            op: "Softmax",
+            rank: normalized.max(0) as usize,
+        });
+    }
+    let row_len = *a_dims.last().unwrap();
+    if row_len == 0 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let numel: usize = a_dims.iter().product();
+    let num_rows = numel / row_len;
+
+    let out = var_ident(node.id);
+    let a = var_ref(a_id, input_id);
+    let len = usize_lit(numel);
+    let row_len_lit = usize_lit(row_len);
+
+    let body = for_or_unroll("r", num_rows, |r| {
+        let max_loop = for_or_unroll("j", row_len, |j| {
+            quote! {
+                {
+                    let v = #a[base + (#j)];
+                    if v > max_v { max_v = v; }
+                }
+            }
+        });
+        let exp_loop = for_or_unroll("j", row_len, |j| {
+            quote! { #out[base + (#j)] = (#a[base + (#j)] - max_v).exp(); }
+        });
+        let sum_loop = for_or_unroll("j", row_len, |j| {
+            quote! { sum_v += #out[base + (#j)]; }
+        });
+        let div_loop = for_or_unroll("j", row_len, |j| {
+            quote! { #out[base + (#j)] /= sum_v; }
+        });
+        quote! {
+            {
+                let base = (#r) * #row_len_lit;
+                let mut max_v: f32 = f32::NEG_INFINITY;
+                #max_loop
+                #exp_loop
+                let mut sum_v: f32 = 0.0;
+                #sum_loop
+                #div_loop
+            }
+        }
+    });
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #body
+    })
+}
+
+/// `MaxPool2d` / `AveragePool2d`: NCHW pooling matching
+/// `tpt_infer_runtime::kernels::{max_pool2d, average_pool2d}` (floor
+/// division for output geometry, padding excluded from the average).
+fn emit_pool(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    kind: PoolKind,
+    kernel: [usize; 2],
+    strides: [usize; 2],
+    padding: [usize; 2],
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() != 1 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let a_id = node.inputs[0];
+    let x_dims = producer_dims(graph, a_id)?;
+    let op_name = match kind {
+        PoolKind::Max => "MaxPool2d",
+        PoolKind::Average => "AveragePool2d",
+    };
+    if x_dims.len() != 4 {
+        return Err(CompileError::UnsupportedRank {
+            node: a_id,
+            op: op_name,
+            rank: x_dims.len(),
+        });
+    }
+    let (n, c, h, w) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
+    let (kh, kw) = (kernel[0], kernel[1]);
+    let (sh, sw) = (strides[0], strides[1]);
+    let (ph, pw) = (padding[0], padding[1]);
+    if kh == 0 || kw == 0 || sh == 0 || sw == 0 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let padded_h = h + 2 * ph;
+    let padded_w = w + 2 * pw;
+    if padded_h < kh || padded_w < kw {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let oh = (padded_h - kh) / sh + 1;
+    let ow = (padded_w - kw) / sw + 1;
+    if node.dims() != [n, c, oh, ow].as_slice() {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+
+    let out = var_ident(node.id);
+    let xr = var_ref(a_id, input_id);
+    let len = usize_lit(n * c * oh * ow);
+    let c_lit = usize_lit(c);
+    let h_lit = usize_lit(h);
+    let w_lit = usize_lit(w);
+    let oh_lit = usize_lit(oh);
+    let ow_lit = usize_lit(ow);
+    let sh_lit = usize_lit(sh);
+    let sw_lit = usize_lit(sw);
+    let ph_lit = usize_lit(ph);
+    let pw_lit = usize_lit(pw);
+
+    let body = for_or_unroll("ni", n, |ni| {
+        for_or_unroll("ci", c, |ci| {
+            for_or_unroll("oy", oh, |oy| {
+                for_or_unroll("ox", ow, |ox| {
+                    let window = for_or_unroll("ky", kh, |ky| {
+                        for_or_unroll("kx", kw, |kx| match kind {
+                            PoolKind::Max => quote! {
+                                {
+                                    let y = (#oy) * #sh_lit + (#ky);
+                                    let x = (#ox) * #sw_lit + (#kx);
+                                    if y >= #ph_lit && y - #ph_lit < #h_lit && x >= #pw_lit && x - #pw_lit < #w_lit {
+                                        let iy = y - #ph_lit;
+                                        let ix = x - #pw_lit;
+                                        let in_idx = ((#ni) * #c_lit + (#ci)) * #h_lit * #w_lit + iy * #w_lit + ix;
+                                        let v = #xr[in_idx];
+                                        if v > best { best = v; }
+                                    }
+                                }
+                            },
+                            PoolKind::Average => quote! {
+                                {
+                                    let y = (#oy) * #sh_lit + (#ky);
+                                    let x = (#ox) * #sw_lit + (#kx);
+                                    if y >= #ph_lit && y - #ph_lit < #h_lit && x >= #pw_lit && x - #pw_lit < #w_lit {
+                                        let iy = y - #ph_lit;
+                                        let ix = x - #pw_lit;
+                                        let in_idx = ((#ni) * #c_lit + (#ci)) * #h_lit * #w_lit + iy * #w_lit + ix;
+                                        let v = #xr[in_idx];
+                                        acc += v;
+                                        count += 1usize;
+                                    }
+                                }
+                            },
+                        })
+                    });
+                    let out_idx =
+                        quote! { (((#ni) * #c_lit + (#ci)) * #oh_lit + (#oy)) * #ow_lit + (#ox) };
+                    match kind {
+                        PoolKind::Max => quote! {
+                            {
+                                let mut best: f32 = f32::NEG_INFINITY;
+                                #window
+                                #out[#out_idx] = best;
+                            }
+                        },
+                        PoolKind::Average => quote! {
+                            {
+                                let mut acc: f32 = 0.0f32;
+                                let mut count: usize = 0;
+                                #window
+                                #out[#out_idx] = if count == 0 { 0.0f32 } else { acc / (count as f32) };
+                            }
+                        },
+                    }
+                })
+            })
+        })
+    });
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #body
+    })
+}
+
+/// `BatchNorm`: `y = (x - mean) / sqrt(var + eps) * scale + bias`, matching
+/// `tpt_infer_runtime::kernels::batch_norm`'s two accepted parameter
+/// layouts — per-channel (`[c]`, rank-4 NCHW input) or per-element
+/// (`numel(x)`).
+fn emit_batch_norm(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    epsilon: f32,
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() != 5 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let x_id = node.inputs[0];
+    let scale_id = node.inputs[1];
+    let bias_id = node.inputs[2];
+    let mean_id = node.inputs[3];
+    let var_id = node.inputs[4];
+    let x_dims = producer_dims(graph, x_id)?;
+    let scale_dims = producer_dims(graph, scale_id)?;
+    let bias_dims = producer_dims(graph, bias_id)?;
+    let mean_dims = producer_dims(graph, mean_id)?;
+    let var_dims = producer_dims(graph, var_id)?;
+    let numel: usize = x_dims.iter().product();
+    let plen: usize = scale_dims.iter().product();
+    if bias_dims.iter().product::<usize>() != plen
+        || mean_dims.iter().product::<usize>() != plen
+        || var_dims.iter().product::<usize>() != plen
+    {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let channel_mode = x_dims.len() == 4 && plen == x_dims[1];
+    let element_mode = plen == numel;
+    if !channel_mode && !element_mode {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+
+    let out = var_ident(node.id);
+    let x = var_ref(x_id, input_id);
+    let scale = var_ref(scale_id, input_id);
+    let bias = var_ref(bias_id, input_id);
+    let mean = var_ref(mean_id, input_id);
+    let var = var_ref(var_id, input_id);
+    let len = usize_lit(numel);
+    let eps_lit = float_literal(epsilon);
+
+    let body = if channel_mode {
+        let (n, c, h, w) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
+        let hw = h * w;
+        let hw_lit = usize_lit(hw);
+        let c_lit = usize_lit(c);
+        for_or_unroll("ni", n, |ni| {
+            for_or_unroll("ci", c, |ci| {
+                let inner = for_or_unroll("p", hw, |p| {
+                    quote! {
+                        {
+                            let idx = ((#ni) * #c_lit + (#ci)) * #hw_lit + (#p);
+                            #out[idx] = #x[idx] * f + g;
+                        }
+                    }
+                });
+                quote! {
+                    {
+                        let inv = 1.0f32 / (#var[(#ci)] + #eps_lit).sqrt();
+                        let f = #scale[(#ci)] * inv;
+                        let g = #bias[(#ci)] - #mean[(#ci)] * f;
+                        #inner
+                    }
+                }
+            })
+        })
+    } else {
+        for_or_unroll("i", numel, |i| {
+            quote! {
+                {
+                    let inv = 1.0f32 / (#var[(#i)] + #eps_lit).sqrt();
+                    let f = #scale[(#i)] * inv;
+                    #out[(#i)] = (#x[(#i)] - #mean[(#i)]) * f + #bias[(#i)];
+                }
+            }
+        })
+    };
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #body
+    })
+}
+
+/// `Concat`: streams each operand into its channel-offset region of the
+/// output, matching `tpt_infer_runtime::kernels::concat_copy_one`'s
+/// `outer`/`c_src`/`inner` block layout.
+fn emit_concat(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    axis: i32,
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() < 2 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let out_dims = node.dims();
+    let rank = out_dims.len();
+    if rank == 0 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let ax = if axis < 0 { axis + rank as i32 } else { axis };
+    if ax < 0 || ax as usize >= rank {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let axis_us = ax as usize;
+    let c_total = out_dims[axis_us];
+    let inner: usize = out_dims[axis_us + 1..].iter().product();
+
+    let out = var_ident(node.id);
+    let numel: usize = out_dims.iter().product();
+    let len = usize_lit(numel);
+    let c_total_lit = usize_lit(c_total);
+    let inner_lit = usize_lit(inner);
+
+    let mut c_offset = 0usize;
+    let mut copies = Vec::new();
+    for &inp in &node.inputs {
+        let dims = producer_dims(graph, inp)?;
+        if dims.len() != rank {
+            return Err(CompileError::ShapeMismatch { node: node.id });
+        }
+        for (d, &v) in dims.iter().enumerate() {
+            if d != axis_us && v != out_dims[d] {
+                return Err(CompileError::ShapeMismatch { node: node.id });
+            }
+        }
+        let c_src = dims[axis_us];
+        let outer: usize = dims[..axis_us].iter().product();
+        let src = var_ref(inp, input_id);
+        let c_src_lit = usize_lit(c_src);
+        let c_offset_lit = usize_lit(c_offset);
+        let copy = for_or_unroll("o", outer, |o| {
+            for_or_unroll("cc", c_src, |cc| {
+                for_or_unroll("p", inner, |p| {
+                    quote! {
+                        #out[(#o) * #c_total_lit * #inner_lit + ((#c_offset_lit) + (#cc)) * #inner_lit + (#p)]
+                            = #src[(#o) * #c_src_lit * #inner_lit + (#cc) * #inner_lit + (#p)];
+                    }
+                })
+            })
+        });
+        copies.push(copy);
+        c_offset += c_src;
+    }
+    if c_offset != c_total {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #(#copies)*
+    })
+}
+
+/// `Transpose`: for each output flat index, decode it into `perm`'s output
+/// coordinates (via compile-time-constant strides) and permute them into
+/// the source's strides, matching `tpt_infer_runtime::kernels::transpose`.
+fn emit_transpose(
+    graph: &ComputationGraph,
+    node: &Node,
+    input_id: usize,
+    perm: &[usize],
+    rank: usize,
+) -> Result<TokenStream, CompileError> {
+    if node.inputs.len() != 1 {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let a_id = node.inputs[0];
+    let x_dims = producer_dims(graph, a_id)?;
+    let out_dims = node.dims();
+    if x_dims.len() != rank || out_dims.len() != rank || perm.len() != rank {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    for d in 0..rank {
+        if out_dims[d] != x_dims[perm[d]] {
+            return Err(CompileError::ShapeMismatch { node: node.id });
+        }
+    }
+
+    let numel: usize = out_dims.iter().product();
+    let x_strides = row_major_strides(x_dims);
+    let out_strides = row_major_strides(out_dims);
+
+    let out = var_ident(node.id);
+    let xr = var_ref(a_id, input_id);
+    let len = usize_lit(numel);
+
+    let body = for_or_unroll("t", numel, |t| {
+        let terms: Vec<TokenStream> = (0..rank)
+            .map(|d| {
+                let os = usize_lit(out_strides[d]);
+                let od = usize_lit(out_dims[d]);
+                let xs = usize_lit(x_strides[perm[d]]);
+                quote! { (((#t) / #os) % #od) * #xs }
+            })
+            .collect();
+        quote! {
+            #out[(#t)] = #xr[#(#terms)+*];
+        }
+    });
+
+    Ok(quote! {
+        let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+        #body
+    })
+}
+
 fn usize_lit(v: usize) -> TokenStream {
     let lit = Literal::usize_unsuffixed(v);
     quote! { #lit }
@@ -345,5 +951,145 @@ fn for_or_unroll(
                 #inner
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fold::fold_constants;
+    use tpt_infer_graph::Initializer;
+
+    #[test]
+    fn row_major_strides_matches_manual_computation() {
+        assert_eq!(row_major_strides(&[2, 3, 4]), vec![12, 4, 1]);
+        assert_eq!(row_major_strides(&[5]), vec![1]);
+        assert_eq!(row_major_strides(&[]), Vec::<usize>::new());
+    }
+
+    fn generate_body(graph: &ComputationGraph, input_id: usize, output_id: usize) -> String {
+        let order = graph.topological_sort().unwrap();
+        let folded = fold_constants(graph, &order);
+        generate(graph, &order, input_id, output_id, &folded)
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn conv2d_rejects_wrong_bias_layout() {
+        // A flat `[oc]` bias does not broadcast onto the channel axis under
+        // tpt-infer-runtime's right-aligned broadcasting (only `[1, oc, 1,
+        // 1]` does), so codegen must reject it rather than silently
+        // generating code that disagrees with the interpreted runtime.
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[1, 1, 3, 3]).unwrap())
+            .unwrap();
+        let w = g
+            .add_node(
+                Node::new(1, Operator::Input, vec![], &[2, 1, 2, 2])
+                    .unwrap()
+                    .with_name("w"),
+            )
+            .unwrap();
+        g.add_initializer(Initializer::new("w", &[2, 1, 2, 2], vec![1.0; 8]).unwrap());
+        let bias = g
+            .add_node(
+                Node::new(2, Operator::Input, vec![], &[2])
+                    .unwrap()
+                    .with_name("bias"),
+            )
+            .unwrap();
+        g.add_initializer(Initializer::new("bias", &[2], vec![0.0, 0.0]).unwrap());
+        let conv = g
+            .add_node(
+                Node::new(
+                    3,
+                    Operator::conv2d([1, 1], [0, 0]),
+                    vec![x, w, bias],
+                    &[1, 2, 2, 2],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        g.mark_output(conv).unwrap();
+
+        let order = graph_topo(&g);
+        let folded = fold_constants(&g, &order);
+        let err = generate(&g, &order, x, conv, &folded).unwrap_err();
+        assert_eq!(
+            err,
+            CompileError::UnsupportedRank {
+                node: bias,
+                op: "Conv2d bias",
+                rank: 1,
+            }
+        );
+    }
+
+    fn graph_topo(graph: &ComputationGraph) -> Vec<usize> {
+        graph.topological_sort().unwrap()
+    }
+
+    #[test]
+    fn softmax_non_last_axis_is_rejected() {
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[2, 3]).unwrap())
+            .unwrap();
+        let y = g
+            .add_node(Node::new(1, Operator::softmax(0), vec![x], &[2, 3]).unwrap())
+            .unwrap();
+        g.mark_output(y).unwrap();
+
+        let order = graph_topo(&g);
+        let folded = fold_constants(&g, &order);
+        let err = generate(&g, &order, x, y, &folded).unwrap_err();
+        assert!(matches!(
+            err,
+            CompileError::UnsupportedRank {
+                node: 1,
+                op: "Softmax",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn softmax_last_axis_generates_exp_and_division() {
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
+            .unwrap();
+        let y = g
+            .add_node(Node::new(1, Operator::softmax(-1), vec![x], &[1, 4]).unwrap())
+            .unwrap();
+        g.mark_output(y).unwrap();
+
+        let src = generate_body(&g, x, y);
+        assert!(src.contains("exp"));
+        assert!(src.contains("max_v"));
+    }
+
+    #[test]
+    fn transpose_uses_the_active_permutation_only() {
+        // Regression test: `Operator::Transpose::perm` is a `[usize; 8]`
+        // array zero-padded past `rank`; codegen must slice it to
+        // `perm[..rank]` rather than treating the trailing zero padding as
+        // real permutation entries.
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[2, 3]).unwrap())
+            .unwrap();
+        let y = g
+            .add_node(
+                Node::new(1, Operator::transpose(&[1, 0]).unwrap(), vec![x], &[3, 2]).unwrap(),
+            )
+            .unwrap();
+        g.mark_output(y).unwrap();
+
+        let order = graph_topo(&g);
+        let folded = fold_constants(&g, &order);
+        assert!(generate(&g, &order, x, y, &folded).is_ok());
     }
 }

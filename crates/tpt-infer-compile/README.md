@@ -39,17 +39,41 @@ for the full write-then-compile-then-run workflow). `CompiledModel` also exposes
 - **Exactly one** non-initializer (`Operator::Input`) runtime input, since the
   generated signature is fixed as `fn execute(input: &[f32]) -> Vec<f32>`.
 - **Exactly one** marked output (via `ComputationGraph::mark_output`/`infer_outputs`).
-- Only the operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands), `Relu`,
-  `Sigmoid`, and `Reshape`/`Flatten`. Anything else — `Conv2d`, `Softmax`, pooling,
-  `BatchNorm`, `Custom`, etc. — is rejected with `CompileError::UnsupportedOperator`
-  rather than silently skipped or miscompiled.
+- The operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands), `Relu`,
+  `Sigmoid`, `Reshape`/`Flatten`, `Conv2d`, `Softmax`, `MaxPool2d`/`AveragePool2d`,
+  `BatchNorm`, `Concat`, and `Transpose`:
+  - `Conv2d` — direct/naive-loop NCHW convolution (no im2col), matching
+    `NaiveBackend::conv2d`'s stride/padding/accumulation order exactly, plus an
+    optional bias input broadcast per output channel. Only a `[1, oc, 1, 1]` bias
+    shape is accepted — that's the only layout that actually broadcasts onto the
+    channel axis under `tpt-infer-runtime`'s right-aligned broadcasting rules; a flat
+    `[oc]` bias is rejected rather than silently mishandled.
+  - `Softmax` — max-subtract/exp/normalize, generated only when the (negative-index
+    normalized) axis is the last dimension, mirroring `tpt-infer-runtime`'s own
+    `Backend::softmax` restriction. Other axes report `CompileError::UnsupportedRank`.
+  - `MaxPool2d`/`AveragePool2d` — matching
+    `tpt_infer_runtime::kernels::{max_pool2d, average_pool2d}`'s floor-division output
+    geometry and padding-excluded-from-average convention.
+  - `BatchNorm` — per-channel or per-element affine normalization, matching
+    `tpt_infer_runtime::kernels::batch_norm`'s two accepted parameter layouts.
+  - `Concat` — streams each operand into its channel-offset region of the output,
+    matching `concat_copy_one`'s block layout.
+  - `Transpose` — permutes via compile-time-constant strides, matching
+    `tpt_infer_runtime::kernels::transpose`.
+
+  Anything else (`Operator::Custom`, `Gelu`, ...) is rejected with
+  `CompileError::UnsupportedOperator` rather than silently skipped or miscompiled.
 
 Nodes whose inputs are entirely compile-time constants (weight initializers, or chains
 of other constant nodes) are evaluated during compilation and spliced into the
 generated source as `f32` array literals instead of emitted runtime code — see the
-[`fold`] module. Loop bounds of 8 elements or fewer are unrolled directly into
-straight-line statements (see [`codegen`]); larger loop bounds are emitted as ordinary
-compile-time-bounded `for` loops for LLVM to optimize.
+[`fold`] module, which covers the same operator set as `codegen` (including `Conv2d`,
+pooling, `BatchNorm`, `Concat`, and `Transpose`; `Softmax` folding additionally
+supports any axis, since it just evaluates in ordinary host Rust rather than being
+constrained by what the generated code can express). Loop bounds of 8 elements or
+fewer are unrolled directly into straight-line statements (see [`codegen`]); larger
+loop bounds are emitted as ordinary compile-time-bounded `for` loops for LLVM to
+optimize.
 
 `fpga_stub` is a **structural placeholder only** — an extension point reserved for a
 future `tpt-crucible` (FPGA/photonic mesh) backend. Every method on it returns

@@ -155,9 +155,13 @@ impl CompiledModel {
 /// - Exactly one marked output ([`ComputationGraph::mark_output`] /
 ///   [`ComputationGraph::infer_outputs`]).
 /// - Operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands),
-///   `Relu`, `Sigmoid`, and `Reshape`/`Flatten`. Anything else is reported
-///   as [`CompileError::UnsupportedOperator`] rather than silently skipped
-///   or panicking.
+///   `Relu`, `Sigmoid`, `Reshape`/`Flatten`, `Conv2d` (direct/naive-loop,
+///   optional per-channel bias), `Softmax` (last-axis only, matching
+///   `tpt-infer-runtime`'s own restriction), `MaxPool2d`/`AveragePool2d`,
+///   `BatchNorm`, `Concat`, and `Transpose`. Anything else (`Gelu`,
+///   `Operator::Custom`, ...) is reported as
+///   [`CompileError::UnsupportedOperator`] rather than silently skipped or
+///   panicking.
 ///
 /// Nodes whose inputs are all compile-time constants (weight initializers,
 /// or the output of another constant node) are evaluated ahead of time in
@@ -343,18 +347,21 @@ mod tests {
 
     #[test]
     fn unsupported_operator_is_reported() {
+        // `Gelu` has no codegen (only `Relu`/`Sigmoid` do); it's a
+        // genuinely unmapped operator, unlike `Softmax` which this crate
+        // now generates code for (last axis only).
         let mut g = ComputationGraph::new();
         let x = g
             .add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap())
             .unwrap();
         let y = g
-            .add_node(Node::new(1, Operator::softmax(-1), vec![x], &[1, 4]).unwrap())
+            .add_node(Node::new(1, Operator::Gelu, vec![x], &[1, 4]).unwrap())
             .unwrap();
         g.mark_output(y).unwrap();
         assert_eq!(
             aot_compile(&g).unwrap_err(),
             CompileError::UnsupportedOperator {
-                name: "Softmax".to_string(),
+                name: "Gelu".to_string(),
                 node: 1
             }
         );
