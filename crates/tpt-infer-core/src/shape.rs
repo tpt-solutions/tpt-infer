@@ -60,8 +60,13 @@ pub const fn unravel_index<const N: usize>(flat: usize, shape: [usize; N]) -> [u
     let mut rem = flat;
     let mut i = 0;
     while i < N {
-        out[i] = if st[i] == 0 { 0 } else { rem / st[i] };
-        rem %= if st[i] == 0 { 1 } else { st[i] };
+        match rem.checked_div(st[i]) {
+            Some(q) if st[i] != 0 => {
+                out[i] = q;
+                rem %= st[i];
+            }
+            _ => out[i] = 0,
+        }
         i += 1;
     }
     out
@@ -82,14 +87,10 @@ pub fn to_dyn<const N: usize>(shape: [usize; N]) -> Shape {
 /// or if a dimension is zero where `N > 0` requires otherwise.
 pub fn from_dyn<const N: usize>(shape: Shape) -> Option<[usize; N]> {
     let mut out = [0usize; N];
-    for i in 0..N {
-        out[i] = shape[i];
-    }
+    out.copy_from_slice(&shape[..N]);
     // Remaining dims must all be zero (padding).
-    for i in N..MAX_RANK {
-        if shape[i] != 0 {
-            return None;
-        }
+    if shape[N..].iter().any(|&d| d != 0) {
+        return None;
     }
     Some(out)
 }

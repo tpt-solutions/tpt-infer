@@ -17,5 +17,8 @@ std = ["tpt-infer-core/alloc", "dep:image"]
 tpt-infer-core = { workspace = true, features = ["alloc"] }
 image = { workspace = true, optional = true }
 
+[dev-dependencies]
+tpt-infer-ops = { workspace = true }
+
 [package.metadata.docs.rs]
 all-features = true

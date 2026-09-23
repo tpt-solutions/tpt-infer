@@ -6,14 +6,14 @@
 
 ## Setup & Infrastructure
 
-- [ ] Initialize Cargo workspace (`Cargo.toml`)
-- [ ] Create crate skeletons for all 8 crates + facade
-- [ ] `LICENSE-MIT`
-- [ ] `LICENSE-APACHE`
-- [ ] `README.md`
-- [ ] `.gitignore`
-- [ ] `.github/workflows/ci.yml` (fmt + clippy + test, 3 platforms)
-- [ ] Verify `cargo build --workspace` passes
+- [x] Initialize Cargo workspace (`Cargo.toml`)
+- [x] Create crate skeletons for all 8 crates + facade
+- [x] `LICENSE-MIT`
+- [x] `LICENSE-APACHE`
+- [x] `README.md`
+- [x] `.gitignore`
+- [x] `.github/workflows/ci.yml` (fmt + clippy + test, 3 platforms)
+- [ ] Verify `cargo build --workspace` passes (currently fails: `tpt-infer-graph` skeleton is missing `GraphBuilder`/`ComputationGraph`/`Edge`/`Node`/`Operator` definitions, and its `alloc` cfg feature isn't declared)
 
 ---
 

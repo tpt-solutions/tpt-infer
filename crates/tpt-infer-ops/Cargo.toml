@@ -12,6 +12,7 @@ rust-version.workspace = true
 [features]
 default = ["std"]
 std = ["tpt-infer-core/alloc"]
+avx512 = []
 webgpu = ["dep:wgpu"]
 
 [dependencies]

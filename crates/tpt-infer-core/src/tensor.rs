@@ -1,6 +1,7 @@
 //! Const-generic `Tensor` and heap-backed `TensorVec`.
 
 use crate::dtype::DType;
+#[cfg(feature = "alloc")]
 use crate::error::TensorError;
 use crate::shape::{num_elements, strides};
 
@@ -68,6 +69,7 @@ pub struct Tensor<T, const N: usize> {
 #[derive(Debug, Clone, PartialEq)]
 enum TensorData<T> {
     #[cfg(not(feature = "alloc"))]
+    #[allow(dead_code)]
     Phantom(core::marker::PhantomData<T>),
     #[cfg(feature = "alloc")]
     Owned(Vec<T>),

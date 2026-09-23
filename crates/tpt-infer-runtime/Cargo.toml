@@ -18,9 +18,24 @@ std = ["alloc", "tpt-infer-graph/std", "tpt-infer-ops/std"]
 tpt-infer-core = { workspace = true }
 tpt-infer-graph = { workspace = true, default-features = false }
 tpt-infer-ops = { workspace = true, default-features = false }
-tpt-infer-compile = { workspace = true, default-features = false }
+# NOTE: `tpt-infer-compile` is intentionally not a dependency yet: the crate is
+# currently a placeholder whose `lib.rs` re-exports `CompiledModel`/`aot_compile`
+# from an empty `model` module, so it does not compile. The runtime therefore
+# executes `ComputationGraph` IR directly (see `execute`/`execute_graph`).
 
 [dev-dependencies]
+# Feature unification during `cargo test`: dev-dependency features merge with
+# normal-dependency features for the same crate, so plain `cargo test -p
+# tpt-infer-runtime` compiles the `std`-gated execution API and `TensorVec`
+# without needing `--features std`.
+tpt-infer-core = { workspace = true, features = ["alloc"] }
+tpt-infer-graph = { workspace = true, features = ["std"] }
+criterion = { workspace = true }
+
+[[bench]]
+name = "latency"
+harness = false
+required-features = ["std"]
 
 [package.metadata.docs.rs]
 all-features = true

@@ -15,8 +15,12 @@ std = ["tpt-infer-core/alloc", "tpt-infer-graph/std"]
 
 [dependencies]
 tpt-infer-core = { workspace = true }
-tpt-infer-graph = { workspace = true, default-features = false }
+# The loader is inherently `std` (file IO + `prost`), so graph's `std` feature is
+# enabled unconditionally; our own `std` feature additionally gates
+# `tpt-infer-core/alloc` (and idempotently `tpt-infer-graph/std`).
+tpt-infer-graph = { workspace = true, default-features = false, features = ["std"] }
 prost = { workspace = true }
+thiserror = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }

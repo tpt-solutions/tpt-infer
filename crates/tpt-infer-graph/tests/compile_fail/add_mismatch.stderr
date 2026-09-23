@@ -1,0 +1,15 @@
+error[E0308]: mismatched types
+ --> tests/compile_fail/add_mismatch.rs:7:19
+  |
+7 |     let _ = b.add(y);
+  |               --- ^ expected `784`, found `128`
+  |               |
+  |               arguments to this method are incorrect
+  |
+  = note: expected struct `NodeRef<Sh<1, 784>>`
+             found struct `NodeRef<Sh<1, 128>>`
+note: method defined here
+ --> src/builder.rs
+  |
+  |     pub fn add<Rhs: ShapeMarker>(
+  |            ^^^
