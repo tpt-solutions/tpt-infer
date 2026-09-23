@@ -15,9 +15,13 @@ This crate is pre-release; versions have not yet been published to crates.io.
   baseline for every other backend.
 - `Avx2Backend` (x86_64) and, behind the `avx512` feature, `Avx512Backend`.
 - `NeonBackend` (aarch64) and `WasmSimdBackend` (wasm32 + `simd128`).
-- `WebGpuBackend` behind the `webgpu` feature: the type, dispatch plumbing, and
-  optional `wgpu` dependency are wired up, but every operation currently returns
-  `OpError::Unsupported` — GPU kernels are not implemented yet.
+- `WebGpuBackend` behind the `webgpu` feature: owns a real `wgpu::Device`/`Queue`
+  plus precompiled pipelines, dispatching actual WGSL compute shaders for `matmul`,
+  `elementwise_add`, `relu`, `sigmoid`, `gelu`, and `softmax`. `conv2d` still returns
+  `OpError::Unsupported` pending an im2col shader. `WebGpuBackend::new()` returns
+  `Option<Self>` (`None` if no GPU adapter is available) and is constructed directly
+  rather than through `AnyBackend`, since it owns GPU resources instead of being a
+  `Copy` unit type.
 - `dispatch::select_backend` / `AnyBackend`: enum-dispatch runtime backend selection
   with no trait objects, preferring AVX-512 > AVX2 on x86_64, NEON on aarch64, SIMD128
   on wasm32, and falling back to `NaiveBackend`.
@@ -29,5 +33,4 @@ This crate is pre-release; versions have not yet been published to crates.io.
 
 ### Known limitations
 
-- `WebGpuBackend` is a stub: it validates the trait shape but performs no GPU
-  computation.
+- `WebGpuBackend::conv2d` is not yet implemented (returns `OpError::Unsupported`).

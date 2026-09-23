@@ -20,10 +20,10 @@ std = ["alloc", "tpt-infer-graph/std", "tpt-infer-ops/std"]
 tpt-infer-core = { workspace = true }
 tpt-infer-graph = { workspace = true, default-features = false }
 tpt-infer-ops = { workspace = true, default-features = false }
-# NOTE: `tpt-infer-compile` is intentionally not a dependency yet: the crate is
-# currently a placeholder whose `lib.rs` re-exports `CompiledModel`/`aot_compile`
-# from an empty `model` module, so it does not compile. The runtime therefore
-# executes `ComputationGraph` IR directly (see `execute`/`execute_graph`).
+# NOTE: `tpt-infer-compile` is intentionally not a dependency: it AOT-compiles
+# a graph into standalone Rust source (to be built separately via `rustc`),
+# not an IR this crate can interpret. The runtime therefore executes
+# `ComputationGraph` IR directly (see `execute`/`execute_graph`).
 
 [dev-dependencies]
 # Feature unification during `cargo test`: dev-dependency features merge with

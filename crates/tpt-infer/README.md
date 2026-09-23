@@ -61,7 +61,7 @@ runs it through the facade.
 | Feature | Default | Unlocks |
 |---------|---------|---------|
 | `ops-cpu` | yes | `Backend`, `NaiveBackend`, `select_backend` |
-| `ops-webgpu` | no | WebGPU backend stub (implies `ops-cpu`) |
+| `ops-webgpu` | no | Real wgpu/WGSL-dispatched `WebGpuBackend` (matmul, elementwise ops, softmax; `conv2d` still unsupported) — implies `ops-cpu` |
 | `onnx` | yes | `load`/`load_from_bytes` — parse `.onnx` files into a `ComputationGraph` |
 | `compile` | yes | `aot_compile` — graph-to-Rust AOT codegen |
 | `runtime` | yes | `execute`/`execute_graph`/`argmax` — interpreted graph execution |

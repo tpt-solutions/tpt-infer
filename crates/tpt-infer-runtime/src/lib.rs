@@ -69,12 +69,13 @@
 //!
 //! # Compile crate status
 //!
-//! `tpt-infer-compile` is currently a placeholder: its `lib.rs` re-exports
-//! `CompiledModel` / `aot_compile` from an empty `model` module and does not
-//! compile. This crate therefore does **not** depend on it and executes
-//! `ComputationGraph` IR directly via [`execute`] / [`execute_graph`].
-//! When a real `CompiledModel` with embedded IR lands, an `execute` overload
-//! accepting it will be added alongside the graph entry points.
+//! `tpt-infer-compile` now has a real `aot_compile`/`CompiledModel`, but it
+//! generates standalone Rust source to be compiled separately (via `rustc`),
+//! not an IR this crate can interpret. This crate therefore does **not**
+//! depend on it and executes `ComputationGraph` IR directly via [`execute`] /
+//! [`execute_graph`]. If a shared interpretable IR is introduced later, an
+//! `execute` overload accepting it can be added alongside the graph entry
+//! points.
 //!
 //! [`ComputationGraph`]: tpt_infer_graph::ComputationGraph
 //! [`Backend`]: tpt_infer_ops::Backend

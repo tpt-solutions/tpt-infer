@@ -21,7 +21,7 @@ inline Rust rather than calling into a `Backend` at runtime.
 | x86_64 AVX-512 | `avx512` | `Avx512Backend` | feature `avx512` + CPU support |
 | aarch64 NEON | `neon` | `NeonBackend` | `target_arch = "aarch64"` |
 | wasm32 SIMD128 | `wasm` | `WasmSimdBackend` | `target_arch = "wasm32"` + `target_feature = "simd128"` |
-| WebGPU | `webgpu` | `WebGpuBackend` | feature `webgpu`; **stub only** — every method currently returns `OpError::Unsupported` |
+| WebGPU | `webgpu` | `WebGpuBackend` | feature `webgpu`; real wgpu/WGSL compute dispatch for `matmul`, `elementwise_add`, `relu`, `sigmoid`, `gelu`, `softmax` — `conv2d` still returns `OpError::Unsupported` (no im2col shader yet) |
 
 All operators write into a caller-provided output slice (no allocation) and validate
 buffer lengths up front, returning `OpError` on mismatch instead of panicking.
@@ -29,6 +29,9 @@ buffer lengths up front, returning `OpError` on mismatch instead of panicking.
 `AnyBackend` (in `dispatch`) is an enum-dispatch wrapper — no trait objects — returned by
 `select_backend()`, which probes the current architecture/CPU at runtime and picks the
 fastest backend actually available, falling back to `NaiveBackend` everywhere else.
+`WebGpuBackend` owns a real GPU `Device`/`Queue` and precompiled pipelines, so it doesn't
+fit `AnyBackend`'s `Copy`-enum dispatch — construct it directly via
+`WebGpuBackend::new() -> Option<Self>` (returns `None` if no adapter is available).
 
 ## Usage
 
@@ -50,7 +53,7 @@ println!("running on backend: {}", backend.name());
 |---|---|---|
 | `std` | yes | Runtime CPU-feature detection (`select_backend`) and native `f32::exp`/`tanh`; also enables `tpt-infer-core/alloc` |
 | `avx512` | no | Compiles `Avx512Backend` (still runtime-detected before use) |
-| `webgpu` | no | Compiles the `WebGpuBackend` stub and the optional `wgpu` dependency — kernels are not implemented yet |
+| `webgpu` | no | Compiles `WebGpuBackend` (real `wgpu`/WGSL dispatch) and its optional `wgpu`/`pollster` dependencies |
 
 ## `no_std`
 
