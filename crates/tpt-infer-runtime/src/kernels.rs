@@ -519,11 +519,12 @@ pub fn transpose(
     }
     let xd = pad(x_dims)?;
     let od = pad(out_dims)?;
+    let offset = MAX_RANK - rank;
     for i in 0..n {
         let oc = unravel_index(i, od);
         let mut xc = [0usize; MAX_RANK];
         for d in 0..rank {
-            xc[perm[d]] = oc[d];
+            xc[offset + perm[d]] = oc[offset + d];
         }
         out[i] = x[ravel_index(xc, xd)];
     }

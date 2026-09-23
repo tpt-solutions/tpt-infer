@@ -158,7 +158,7 @@ impl QuantizedGraph {
 ///
 /// let mut g = ComputationGraph::new();
 /// let x = g.add_node(Node::new(0, Operator::Input, vec![], &[1, 4]).unwrap()).unwrap();
-/// let w = g.add_node(Node::new(1, Operator::Input, vec![], &[4, 8]).unwrap()).unwrap();
+/// let w = g.add_node(Node::new(1, Operator::Input, vec![], &[4, 8]).unwrap().with_name("w")).unwrap();
 /// g.add_initializer(Initializer::new("w", &[4, 8], vec![0.01; 32]).unwrap());
 /// let y = g.add_node(Node::new(2, Operator::MatMul, vec![x, w], &[1, 8]).unwrap()).unwrap();
 /// g.mark_output(y).unwrap();
