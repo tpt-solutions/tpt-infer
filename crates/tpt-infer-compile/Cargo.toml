@@ -1,0 +1,23 @@
+[package]
+name = "tpt-infer-compile"
+description = "Ahead-of-time compiler that translates computation graphs into optimized Rust code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = ["tpt-infer-core/alloc", "tpt-infer-graph/std"]
+
+[dependencies]
+tpt-infer-core = { workspace = true }
+tpt-infer-graph = { workspace = true, default-features = false }
+quote = { workspace = true }
+proc-macro2 = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

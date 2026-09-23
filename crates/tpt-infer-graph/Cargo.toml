@@ -1,0 +1,23 @@
+[package]
+name = "tpt-infer-graph"
+description = "Compile-time-checked computation graph builder with const-generic shape validation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = ["tpt-infer-core/alloc"]
+
+[dependencies]
+tpt-infer-core = { workspace = true }
+
+[dev-dependencies]
+trybuild = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

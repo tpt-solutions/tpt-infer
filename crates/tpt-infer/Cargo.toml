@@ -1,0 +1,36 @@
+[package]
+name = "tpt-infer"
+description = "Edge AI & local inference runtime — facade crate unifying the tpt-infer workspace"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["ops-cpu", "onnx", "compile", "runtime"]
+ops-cpu = ["dep:tpt-infer-ops"]
+ops-webgpu = ["ops-cpu", "tpt-infer-ops/webgpu"]
+vision = ["dep:tpt-infer-vision"]
+quantize = ["dep:tpt-infer-quantize"]
+onnx = ["dep:tpt-infer-onnx"]
+compile = ["dep:tpt-infer-compile"]
+runtime = ["dep:tpt-infer-runtime", "tpt-infer-runtime/std"]
+
+[dependencies]
+tpt-infer-core = { workspace = true }
+tpt-infer-ops = { workspace = true, optional = true, default-features = false, features = ["std"] }
+tpt-infer-graph = { workspace = true, default-features = false, features = ["std"] }
+tpt-infer-onnx = { workspace = true, optional = true, default-features = false, features = ["std"] }
+tpt-infer-quantize = { workspace = true, optional = true }
+tpt-infer-compile = { workspace = true, optional = true }
+tpt-infer-runtime = { workspace = true, optional = true, default-features = false, features = ["std"] }
+tpt-infer-vision = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true

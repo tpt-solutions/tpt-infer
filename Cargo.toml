@@ -1,0 +1,46 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tpt-infer-core",
+    "crates/tpt-infer-ops",
+    "crates/tpt-infer-graph",
+    "crates/tpt-infer-onnx",
+    "crates/tpt-infer-quantize",
+    "crates/tpt-infer-compile",
+    "crates/tpt-infer-runtime",
+    "crates/tpt-infer-vision",
+    "crates/tpt-infer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tpt-solutions/tpt-infer"
+homepage = "https://github.com/tpt-solutions/tpt-infer"
+authors = ["TPT Solutions"]
+rust-version = "1.75"
+
+[workspace.dependencies]
+tpt-infer-core = { path = "crates/tpt-infer-core", version = "0.1.0" }
+tpt-infer-ops = { path = "crates/tpt-infer-ops", version = "0.1.0", default-features = false }
+tpt-infer-graph = { path = "crates/tpt-infer-graph", version = "0.1.0", default-features = false }
+tpt-infer-onnx = { path = "crates/tpt-infer-onnx", version = "0.1.0", default-features = false }
+tpt-infer-quantize = { path = "crates/tpt-infer-quantize", version = "0.1.0", default-features = false }
+tpt-infer-compile = { path = "crates/tpt-infer-compile", version = "0.1.0", default-features = false }
+tpt-infer-runtime = { path = "crates/tpt-infer-runtime", version = "0.1.0", default-features = false }
+tpt-infer-vision = { path = "crates/tpt-infer-vision", version = "0.1.0", default-features = false }
+
+thiserror = "2"
+tempfile = "3"
+prost = "0.13"
+prost-build = "0.13"
+wgpu = "23"
+criterion = "0.5"
+image = "0.25"
+quote = "1"
+proc-macro2 = "1"
+trybuild = "1"
+
+[profile.bench]
+lto = true

@@ -1,0 +1,21 @@
+[package]
+name = "tpt-infer-vision"
+description = "Pure-Rust image preprocessing (resize, normalize, letterbox) for vision models"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["std"]
+std = ["tpt-infer-core/alloc", "dep:image"]
+
+[dependencies]
+tpt-infer-core = { workspace = true, features = ["alloc"] }
+image = { workspace = true, optional = true }
+
+[package.metadata.docs.rs]
+all-features = true

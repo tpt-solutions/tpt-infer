@@ -1,0 +1,28 @@
+[package]
+name = "tpt-infer-onnx"
+description = "Pure-Rust ONNX model parser and operator registry (no C-FFI)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+std = ["tpt-infer-core/alloc", "tpt-infer-graph/std"]
+
+[dependencies]
+tpt-infer-core = { workspace = true }
+tpt-infer-graph = { workspace = true, default-features = false }
+prost = { workspace = true }
+
+[build-dependencies]
+prost-build = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
