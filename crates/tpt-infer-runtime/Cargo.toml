@@ -33,10 +33,20 @@ tpt-infer-ops = { workspace = true, default-features = false }
 tpt-infer-core = { workspace = true, features = ["alloc"] }
 tpt-infer-graph = { workspace = true, features = ["std"] }
 criterion = { workspace = true }
+# Dev-only: lets the `onnx_end_to_end` integration test load a real `.onnx`
+# fixture file (see crates/tpt-infer-onnx/tests/fixtures/) and run it
+# through `execute`/`execute_graph`. `tpt-infer-onnx` does not depend on
+# `tpt-infer-runtime`, so this does not create a dependency cycle (same
+# pattern already used for `tpt-infer-compile`'s dev-deps on this crate).
+tpt-infer-onnx = { workspace = true, default-features = false, features = ["std"] }
 
 [[bench]]
 name = "latency"
 harness = false
+required-features = ["std"]
+
+[[test]]
+name = "onnx_mobilenet_end_to_end"
 required-features = ["std"]
 
 [package.metadata.docs.rs]

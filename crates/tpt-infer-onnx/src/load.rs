@@ -143,13 +143,8 @@ pub fn graph_from_proto(
             .cloned()
             .filter(|d| !d.is_empty())
             .unwrap_or_else(|| vec![1]);
-        let node = Node::new(
-            out.nodes().len(),
-            Operator::Input,
-            vec![],
-            &dims,
-        )?
-        .with_name(&vi.name);
+        let node =
+            Node::new(out.nodes().len(), Operator::Input, vec![], &dims)?.with_name(&vi.name);
         let id = out.add_node(node)?;
         name_to_node.insert(vi.name.clone(), id);
     }
@@ -160,13 +155,8 @@ pub fn graph_from_proto(
         if dims.is_empty() {
             dims.push(1);
         }
-        let node = Node::new(
-            out.nodes().len(),
-            Operator::Input,
-            vec![],
-            &dims,
-        )?
-        .with_name(&init.name);
+        let node =
+            Node::new(out.nodes().len(), Operator::Input, vec![], &dims)?.with_name(&init.name);
         let id = out.add_node(node)?;
         name_to_node.insert(init.name.clone(), id);
         if let Some(data) = tensor_f32(init) {
@@ -180,7 +170,7 @@ pub fn graph_from_proto(
 
     // ONNX graphs are topologically sorted.
     for onnx_node in &graph.node {
-        let op = build_operator(onnx_node, graph);
+        let mut op = build_operator(onnx_node, graph);
         let mut inputs = Vec::with_capacity(onnx_node.input.len());
         for in_name in &onnx_node.input {
             if in_name.is_empty() {
@@ -200,6 +190,28 @@ pub fn graph_from_proto(
             .iter()
             .map(|&i| out.nodes()[i].dims().to_vec())
             .collect();
+
+        // `GlobalAveragePool` is mapped to `AveragePool2d` with a `[0, 0]`
+        // sentinel kernel (see `build_operator`/`registry::map_op`) since the
+        // real spatial extent isn't known until the input's shape is. Now
+        // that `in_dims` is available, resolve it to the actual `[H, W]` of
+        // the input feature map so the runtime (which pools over exactly
+        // `kernel` elements, not a sentinel) executes it correctly.
+        if let Operator::AveragePool2d {
+            kernel: [0, 0],
+            strides,
+            padding,
+        } = op
+        {
+            if let Some(x) = in_dims.first().filter(|d| d.len() == 4) {
+                op = Operator::AveragePool2d {
+                    kernel: [x[2], x[3]],
+                    strides,
+                    padding,
+                };
+            }
+        }
+
         let declared = onnx_node
             .output
             .first()
@@ -308,25 +320,14 @@ fn build_operator(node: &proto::NodeProto, _graph: &GraphProto) -> Operator {
     let op = map_op(op_type);
 
     match op_type {
-        "Conv" => Operator::Conv2d {
-            strides,
-            padding,
-        },
+        "Conv" => Operator::Conv2d { strides, padding },
         "MaxPool" => Operator::MaxPool2d {
-            kernel: if kernel == [0, 0] {
-                [2, 2]
-            } else {
-                kernel
-            },
+            kernel: if kernel == [0, 0] { [2, 2] } else { kernel },
             strides,
             padding,
         },
         "AveragePool" => Operator::AveragePool2d {
-            kernel: if kernel == [0, 0] {
-                [2, 2]
-            } else {
-                kernel
-            },
+            kernel: if kernel == [0, 0] { [2, 2] } else { kernel },
             strides,
             padding,
         },
@@ -432,9 +433,7 @@ fn tensor_f32(t: &TensorProto) -> Option<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proto::{
-        type_proto, tensor_shape_proto, NodeProto, TensorShapeProto, TypeProto,
-    };
+    use proto::{tensor_shape_proto, type_proto, NodeProto, TensorShapeProto, TypeProto};
 
     fn f32_vi(name: &str, dims: &[i64]) -> ValueInfoProto {
         let shape = TensorShapeProto {
@@ -521,7 +520,12 @@ mod tests {
         bytes
     }
 
-    fn graph_of(name: &str, nodes: Vec<NodeProto>, input: Vec<ValueInfoProto>, output: Vec<ValueInfoProto>) -> GraphProto {
+    fn graph_of(
+        name: &str,
+        nodes: Vec<NodeProto>,
+        input: Vec<ValueInfoProto>,
+        output: Vec<ValueInfoProto>,
+    ) -> GraphProto {
         GraphProto {
             node: nodes,
             name: name.into(),
@@ -598,10 +602,7 @@ mod tests {
         ];
         let mut gproto = graph_of(
             "mobilenet_stem",
-            vec![
-                conv,
-                node(&["c"], &["r"], "relu", "Relu"),
-            ],
+            vec![conv, node(&["c"], &["r"], "relu", "Relu")],
             vec![f32_vi("x", &[1, 3, 224, 224])],
             vec![f32_vi("r", &[1, 32, 112, 112])],
         );
