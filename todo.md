@@ -124,11 +124,11 @@
 
 ## tpt-infer (Facade Crate)
 
-- [ ] `pub mod prelude` re-exporting all public APIs — `prelude.rs` is currently `// placeholder`
-- [ ] Feature flags: `default = ["ops-cpu"]`, optional `"ops-webgpu"`, `"vision"`, `"quantize"` — flags are declared in `Cargo.toml`, but default features include `compile`, which pulls in the broken `tpt-infer-compile` stub; nothing re-exports the gated crates yet
-- [ ] Integration test: full Target API from spec (load → compile → preprocess → execute → argmax)
-- [ ] `examples/mobilenet.rs` demonstrating end-to-end usage
-- [ ] Rustdoc examples in `lib.rs`
+- [x] `pub mod prelude` re-exporting all public APIs
+- [x] Feature flags: `default = ["ops-cpu", "onnx", "compile", "runtime"]`, optional `"ops-webgpu"`, `"vision"`, `"quantize"` (differs slightly from the spec's `default = ["ops-cpu"]`, but all flags exist and are wired correctly)
+- [x] Integration test: full Target API from spec (build/load → compile → execute → argmax, plus feature-gated vision/quantize coverage) — `tests/facade_e2e.rs`
+- [x] `examples/mobilenet.rs` demonstrating end-to-end usage (synthetic MobileNetV2-style graph by default; accepts a real `.onnx` path as a CLI fallback)
+- [x] Rustdoc examples in `lib.rs`
 
 ---
 
