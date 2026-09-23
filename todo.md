@@ -40,7 +40,7 @@
 - [x] x86_64 AVX-512 SIMD backend (feature-gated)
 - [x] ARM NEON/SVE backend (`std::arch::aarch64`)
 - [x] WASM SIMD backend (`std::arch::wasm32`)
-- [x] WebGPU backend via `wgpu` (feature = "webgpu") — real WGSL compute dispatch for matmul/elementwise/softmax; `conv2d` still returns `Unsupported` (no im2col shader yet)
+- [x] WebGPU backend via `wgpu` (feature = "webgpu") — real WGSL compute dispatch for every `Backend` operator, including `conv2d` (direct per-output-element dispatch, not im2col)
 - [x] Runtime dispatch: `#[cfg(target_feature)]` + `#[cfg(target_arch)]`
 - [x] `criterion` benchmark: matmul at [1,784]×[784,10] and [1,3,224,224] conv shapes
 - [x] Unit tests: all backends produce identical results to naive reference
