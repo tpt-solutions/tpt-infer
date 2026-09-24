@@ -1,0 +1,28 @@
+[package]
+name = "tpt-infer-py"
+description = "Python bindings for tpt-infer: load and run ONNX models via PyO3"
+keywords = ["python", "onnx", "inference", "ml", "pyo3"]
+categories = ["science"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "_tpt_infer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { workspace = true, features = ["extension-module", "abi3-py38"] }
+tpt-infer-core = { workspace = true, features = ["alloc"] }
+tpt-infer-graph = { workspace = true, features = ["std"] }
+tpt-infer-onnx = { workspace = true, default-features = false, features = ["std"] }
+tpt-infer-ops = { workspace = true, default-features = false, features = ["std"] }
+tpt-infer-runtime = { workspace = true, default-features = false, features = ["std"] }
+tpt-infer-compile = { workspace = true, default-features = false, features = ["std"] }
+
+[package.metadata.docs.rs]
+all-features = true

@@ -80,11 +80,18 @@ fn add_conv(
 /// Appends a unary operator node.
 fn add_unary(g: &mut ComputationGraph, op: Operator, x: usize, odims: &[usize]) -> usize {
     let id = g.nodes().len();
-    g.add_node(Node::new(id, op, vec![x], odims).unwrap()).unwrap()
+    g.add_node(Node::new(id, op, vec![x], odims).unwrap())
+        .unwrap()
 }
 
 /// Appends a binary operator node.
-fn add_binary(g: &mut ComputationGraph, op: Operator, a: usize, b: usize, odims: &[usize]) -> usize {
+fn add_binary(
+    g: &mut ComputationGraph,
+    op: Operator,
+    a: usize,
+    b: usize,
+    odims: &[usize],
+) -> usize {
     let id = g.nodes().len();
     g.add_node(Node::new(id, op, vec![a, b], odims).unwrap())
         .unwrap()
@@ -205,7 +212,7 @@ fn mobilenet_v2_end_to_end() {
     assert!(g.nodes().len() > 30, "fixture should be multi-block");
     assert_eq!(g.outputs().len(), 1);
 
-    let input = lcg(1 * 8 * 32 * 32, 7, 0.5);
+    let input = lcg(8 * 32 * 32, 7, 0.5);
     let mut mem = vec![0u8; required_arena_bytes(&g) + 4096];
     let mut arena = BumpArena::new(&mut mem);
     let out = execute(&g, &input, &mut arena, &NaiveBackend::new()).expect("fixture executes");
@@ -378,6 +385,10 @@ fn selected_backend_executes() {
     let mut arena = BumpArena::new(&mut mem);
     let out = execute(&g, &input, &mut arena, &backend).unwrap();
     let sum: f32 = out.as_slice().iter().sum();
-    assert!((sum - 1.0).abs() < 1e-4, "backend {} softmax rows", backend.name());
+    assert!(
+        (sum - 1.0).abs() < 1e-4,
+        "backend {} softmax rows",
+        backend.name()
+    );
     assert_eq!(argmax(out.as_slice()), 3);
 }

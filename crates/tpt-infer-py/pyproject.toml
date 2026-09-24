@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tpt-infer"
+version = "0.1.0"
+description = "Python bindings for tpt-infer: load and run ONNX models"
+readme = "README.md"
+license = { text = "MIT OR Apache-2.0" }
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+module-name = "tpt_infer._tpt_infer"
+python-source = "python"
+manifest-path = "Cargo.toml"

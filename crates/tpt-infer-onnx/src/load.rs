@@ -228,7 +228,19 @@ pub fn graph_from_proto(
             Node::new(out.nodes().len(), Operator::Input, vec![], &dims)?.with_name(&init.name);
         let id = out.add_node(node)?;
         name_to_node.insert(init.name.clone(), id);
-        if let Some(data) = tensor_f32(init) {
+
+        // `INT64` initializers (shape/index tensors feeding e.g. `Reshape`,
+        // `Slice`, `Gather` — ubiquitous in real ONNX exports) have no
+        // dedicated storage in `Initializer` (which is `f32`-only), but
+        // every value in a shape/index tensor is a small integer that
+        // round-trips losslessly through `f32`. Binding them this way
+        // (rather than leaving them unbound) is what lets `execute`/
+        // `aot_compile` treat this node as a resolved constant instead of a
+        // dangling free input the caller could never supply data for.
+        let data = tensor_f32(init).or_else(|| {
+            tensor_i64(init).map(|ints| ints.into_iter().map(|v| v as f32).collect())
+        });
+        if let Some(data) = data {
             let expected: usize = dims
                 .iter()
                 .try_fold(1usize, |acc, &d| acc.checked_mul(d))
@@ -293,6 +305,50 @@ pub fn graph_from_proto(
             }
         }
 
+        // `auto_pad = SAME_UPPER`/`SAME_LOWER` (common in real exports —
+        // e.g. models converted from frameworks whose native op computes
+        // "same" padding rather than emitting explicit `pads`) means the
+        // padding actually applied depends on the input's spatial size,
+        // which (like `GlobalAveragePool` above) is only known now that
+        // `in_dims` is available. `VALID`/`NOTSET` need no fixup (`NOTSET`
+        // already used the explicit `pads` attribute, if any, in
+        // `build_operator`; `VALID` means zero padding).
+        if let Some(auto_pad) = auto_pad_attr(onnx_node) {
+            if auto_pad == "SAME_UPPER" || auto_pad == "SAME_LOWER" {
+                match &mut op {
+                    Operator::Conv2d { strides, padding } => {
+                        if let (Some(x), Some(w)) = (
+                            in_dims.first().filter(|d| d.len() == 4),
+                            in_dims.get(1).filter(|d| d.len() == 4),
+                        ) {
+                            *padding = [
+                                same_padding(x[2], w[2], strides[0]),
+                                same_padding(x[3], w[3], strides[1]),
+                            ];
+                        }
+                    }
+                    Operator::MaxPool2d {
+                        kernel,
+                        strides,
+                        padding,
+                    }
+                    | Operator::AveragePool2d {
+                        kernel,
+                        strides,
+                        padding,
+                    } => {
+                        if let Some(x) = in_dims.first().filter(|d| d.len() == 4) {
+                            *padding = [
+                                same_padding(x[2], kernel[0], strides[0]),
+                                same_padding(x[3], kernel[1], strides[1]),
+                            ];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         let declared = onnx_node
             .output
             .first()
@@ -341,7 +397,7 @@ pub fn graph_from_proto(
     Ok(out)
 }
 
-fn build_operator(node: &proto::NodeProto, _graph: &GraphProto) -> Operator {
+fn build_operator(node: &proto::NodeProto, graph: &GraphProto) -> Operator {
     let mut strides = [1usize, 1usize];
     let mut padding = [0usize, 2usize]; // placeholder, overwritten below
     let mut padding_set = false;
@@ -391,10 +447,14 @@ fn build_operator(node: &proto::NodeProto, _graph: &GraphProto) -> Operator {
         padding = [0, 0];
     }
 
-    // Reshape target can come from the second input initializer (int64 shape
-    // tensor). Float weight blobs are not reshape shapes; skip them.
-    if reshape_shape.is_none() {
-        // Left as map_op default; shape attr is the common path above.
+    // Modern ONNX exports (opset >= 5) pass Reshape's target shape as its
+    // second *input* (an int64 initializer) rather than a `shape`
+    // attribute. Resolve it here so `Operator::Reshape` always carries a
+    // concrete compile-time shape when one is statically known.
+    if reshape_shape.is_none() && node.op_type == "Reshape" {
+        if let Some(shape_name) = node.input.get(1) {
+            reshape_shape = int64_initializer(graph, shape_name);
+        }
     }
 
     let op_type = node.op_type.as_str();
@@ -464,6 +524,31 @@ fn build_operator(node: &proto::NodeProto, _graph: &GraphProto) -> Operator {
     }
 }
 
+/// The `auto_pad` string attribute (`"NOTSET"`/`"VALID"`/`"SAME_UPPER"`/
+/// `"SAME_LOWER"`), if present.
+fn auto_pad_attr(node: &proto::NodeProto) -> Option<String> {
+    node.attribute
+        .iter()
+        .find(|a| a.name == "auto_pad")
+        .map(|a| String::from_utf8_lossy(&a.s).into_owned())
+}
+
+/// Symmetric padding that approximates ONNX's `SAME_UPPER`/`SAME_LOWER`
+/// `auto_pad` modes for one spatial dimension.
+///
+/// ONNX's real semantics can be *asymmetric* (a different amount of padding
+/// at the start vs. end of the axis), which `Operator::Conv2d`'s
+/// single-`usize`-per-axis `padding` can't represent — but the total
+/// padding is only odd when `kernel` is even (rare for real conv/pool
+/// kernels, which are overwhelmingly odd-sized), so `total_pad / 2` is
+/// exact in the common case and a one-off-per-side approximation otherwise.
+fn same_padding(input: usize, kernel: usize, stride: usize) -> usize {
+    let stride = stride.max(1);
+    let out = input.div_ceil(stride);
+    let needed = out.saturating_sub(1) * stride + kernel;
+    needed.saturating_sub(input) / 2
+}
+
 fn ints_of(a: &AttributeProto) -> Vec<i64> {
     if !a.ints.is_empty() {
         a.ints.clone()
@@ -509,6 +594,39 @@ fn tensor_f32(t: &TensorProto) -> Option<Vec<f32>> {
         return Some(t.float_data.clone());
     }
     Some(Vec::new())
+}
+
+/// Reads an `INT64` tensor's data (e.g. a `Reshape`/`Shape`/`Slice` target,
+/// which ONNX always stores as int64, never as an attribute in modern
+/// exports). Returns `None` for any other dtype.
+fn tensor_i64(t: &TensorProto) -> Option<Vec<i64>> {
+    if t.data_type != DataType::Int64 as i32 {
+        return None;
+    }
+    if !t.raw_data.is_empty() {
+        let bytes = &t.raw_data;
+        let mut out = Vec::with_capacity(bytes.len() / 8);
+        for chunk in bytes.chunks_exact(8) {
+            out.push(i64::from_le_bytes(chunk.try_into().expect("8-byte chunk")));
+        }
+        return Some(out);
+    }
+    if !t.int64_data.is_empty() {
+        return Some(t.int64_data.clone());
+    }
+    Some(Vec::new())
+}
+
+/// Finds `name` among `graph`'s initializers and, if it's an `INT64`
+/// tensor, reads its data — used to resolve a `Reshape` node's target shape
+/// when it comes from a graph input rather than a `shape` attribute (the
+/// common case for models exported by modern ONNX converters).
+fn int64_initializer(graph: &GraphProto, name: &str) -> Option<Vec<i64>> {
+    graph
+        .initializer
+        .iter()
+        .find(|init| init.name == name)
+        .and_then(tensor_i64)
 }
 
 #[cfg(test)]
@@ -582,6 +700,13 @@ mod tests {
         let mut a = empty_attrs();
         a.name = name.into();
         a.ints = ints;
+        a
+    }
+
+    fn attr_str(name: &str, value: &str) -> AttributeProto {
+        let mut a = empty_attrs();
+        a.name = name.into();
+        a.s = value.as_bytes().to_vec();
         a
     }
 
@@ -706,6 +831,95 @@ mod tests {
             }
         );
         assert_eq!(g.topological_sort().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn conv_auto_pad_same_upper_resolves_symmetric_padding() {
+        // Real exports (e.g. from frameworks whose native op computes "same"
+        // padding) often use `auto_pad` instead of an explicit `pads`
+        // attribute. For an odd kernel with stride 1, SAME_UPPER/SAME_LOWER
+        // padding is exactly symmetric: total_pad = kernel - 1 (always
+        // even), split evenly on both sides.
+        let oc = 8usize;
+        let w = TensorProto {
+            dims: vec![oc as i64, 1, 5, 5],
+            data_type: DataType::Float as i32,
+            float_data: vec![0.1; oc * 25],
+            name: "conv_w".into(),
+            ..Default::default()
+        };
+        let mut conv = node(&["x", "conv_w"], &["c"], "conv", "Conv");
+        conv.attribute = vec![
+            attr_ints("strides", vec![1, 1]),
+            attr_ints("kernel_shape", vec![5, 5]),
+            attr_str("auto_pad", "SAME_UPPER"),
+        ];
+        let mut gproto = graph_of(
+            "auto_pad_conv",
+            vec![conv],
+            vec![f32_vi("x", &[1, 1, 28, 28])],
+            vec![f32_vi("c", &[1, 8, 28, 28])],
+        );
+        gproto.initializer = vec![w];
+        let bytes = model(gproto);
+        let g = load_from_bytes(&bytes).unwrap();
+        let conv_node = g
+            .nodes()
+            .iter()
+            .find(|n| matches!(n.operator, Operator::Conv2d { .. }))
+            .unwrap();
+        assert_eq!(
+            conv_node.operator,
+            Operator::Conv2d {
+                strides: [1, 1],
+                padding: [2, 2],
+            }
+        );
+        // Output spatial size matches input (that's the point of "same" padding).
+        assert_eq!(conv_node.dims(), &[1, 8, 28, 28]);
+    }
+
+    #[test]
+    fn reshape_target_from_int64_initializer_input() {
+        // Modern ONNX exports pass Reshape's target shape as a second
+        // *input* (an int64 initializer), not a `shape` attribute. This
+        // must resolve to a concrete `Operator::Reshape` shape, and the
+        // int64 tensor must be bound as an initializer (not left as a
+        // dangling free runtime input the caller could never supply data for).
+        let shape_init = TensorProto {
+            dims: vec![2],
+            data_type: DataType::Int64 as i32,
+            int64_data: vec![1, 12],
+            name: "target_shape".into(),
+            ..Default::default()
+        };
+        let reshape = node(&["x", "target_shape"], &["y"], "reshape0", "Reshape");
+        let mut gproto = graph_of(
+            "reshape_from_input",
+            vec![reshape],
+            vec![f32_vi("x", &[1, 3, 4])],
+            vec![f32_vi("y", &[1, 12])],
+        );
+        gproto.initializer = vec![shape_init];
+        let bytes = model(gproto);
+        let g = load_from_bytes(&bytes).unwrap();
+
+        let reshape_node = g
+            .nodes()
+            .iter()
+            .find(|n| matches!(n.operator, Operator::Reshape { .. }))
+            .expect("reshape node present");
+        match &reshape_node.operator {
+            Operator::Reshape { shape, rank } => {
+                assert_eq!(&shape[..*rank], &[1, 12]);
+            }
+            _ => unreachable!(),
+        }
+
+        assert!(
+            g.initializers().iter().any(|i| i.name == "target_shape"),
+            "int64 shape tensor must be bound as an initializer"
+        );
     }
 
     #[test]

@@ -176,9 +176,9 @@ fn kahn(
 
     // Prefix-sum the per-producer counts into CSR offsets.
     let mut acc = 0usize;
-    for i in 0..=n {
-        let count = adj_off[i];
-        adj_off[i] = acc;
+    for slot in adj_off.iter_mut().take(n + 1) {
+        let count = *slot;
+        *slot = acc;
         acc = acc.saturating_add(count);
     }
     debug_assert_eq!(acc, adj.len());
@@ -195,8 +195,8 @@ fn kahn(
 
     let mut head = 0usize;
     let mut tail = 0usize;
-    for id in 0..n {
-        if indegree[id] == 0 {
+    for (id, &deg) in indegree.iter().enumerate().take(n) {
+        if deg == 0 {
             queue[tail] = id;
             tail += 1;
         }
@@ -231,9 +231,9 @@ fn bind_inputs(
 ) -> Result<(), RuntimeError> {
     let mut used = 0usize;
     for &id in graph.inputs() {
-        let node = graph
-            .node(id)
-            .ok_or(RuntimeError::Graph(tpt_infer_graph::GraphError::UnknownNode { id }))?;
+        let node = graph.node(id).ok_or(RuntimeError::Graph(
+            tpt_infer_graph::GraphError::UnknownNode { id },
+        ))?;
         let declared = node_numel(node)?;
         let mut bound = false;
         if let Some(name) = &node.name {
@@ -280,9 +280,9 @@ fn assign_offsets(
 ) -> Result<usize, RuntimeError> {
     let mut total = 0usize;
     for &id in order {
-        let node = graph
-            .node(id)
-            .ok_or(RuntimeError::Graph(tpt_infer_graph::GraphError::UnknownNode { id }))?;
+        let node = graph.node(id).ok_or(RuntimeError::Graph(
+            tpt_infer_graph::GraphError::UnknownNode { id },
+        ))?;
         if node.operator.is_input() {
             continue;
         }
@@ -375,10 +375,7 @@ impl<'g, B: Backend> Exec<'g, B> {
                     return Err(RuntimeError::ShapeMismatch);
                 }
                 let options = Conv2dOptions::with_stride_padding(
-                    strides[0],
-                    strides[1],
-                    padding[0],
-                    padding[1],
+                    strides[0], strides[1], padding[0], padding[1],
                 );
                 self.backend.conv2d(
                     x,
@@ -506,7 +503,11 @@ impl<'g, B: Backend> Exec<'g, B> {
                     if dims.len() != rank {
                         return Err(RuntimeError::ShapeMismatch);
                     }
-                    if dims.iter().enumerate().any(|(d, &v)| d != axis_us && v != out_dims[d]) {
+                    if dims
+                        .iter()
+                        .enumerate()
+                        .any(|(d, &v)| d != axis_us && v != out_dims[d])
+                    {
                         return Err(RuntimeError::ShapeMismatch);
                     }
                     let c_src = dims[axis_us];
@@ -527,9 +528,7 @@ impl<'g, B: Backend> Exec<'g, B> {
             Operator::Custom(name) => Err(RuntimeError::UnsupportedCustom { name: name.clone() }),
 
             // Forward-compatibility catch-all for new graph-IR variants.
-            other => Err(RuntimeError::UnsupportedOp {
-                name: other.name(),
-            }),
+            other => Err(RuntimeError::UnsupportedOp { name: other.name() }),
         }
     }
 }
@@ -861,10 +860,7 @@ mod tests {
         let mut arena = BumpArena::new(&mut mem);
         let x = [0.0f32; 4];
         let err = execute_graph(&g, &[&x], &mut arena, &NaiveBackend::new()).unwrap_err();
-        assert_eq!(
-            err,
-            RuntimeError::UnsupportedCustom { name: "Erf".into() }
-        );
+        assert_eq!(err, RuntimeError::UnsupportedCustom { name: "Erf".into() });
     }
 
     #[test]

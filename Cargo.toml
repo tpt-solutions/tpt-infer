@@ -10,6 +10,9 @@ members = [
     "crates/tpt-infer-runtime",
     "crates/tpt-infer-vision",
     "crates/tpt-infer",
+    "crates/tpt-infer-cli",
+    "crates/tpt-infer-wasm",
+    "crates/tpt-infer-py",
 ]
 
 [workspace.package]
@@ -42,6 +45,13 @@ image = "0.25"
 quote = "1"
 proc-macro2 = "1"
 trybuild = "1"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.10"
+tpt-infer = { path = "crates/tpt-infer", version = "0.1.0", default-features = false }
+clap = "4"
+wasm-bindgen = "0.2"
+console_error_panic_hook = "0.1"
+pyo3 = "0.29"
 
 [profile.bench]
 lto = true

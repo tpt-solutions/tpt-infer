@@ -1,0 +1,25 @@
+[package]
+name = "tpt-infer-cli"
+description = "Command-line tool for smoke-testing and inspecting ONNX models with tpt-infer"
+keywords = ["onnx", "cli", "inference", "ml"]
+categories = ["command-line-utilities", "science"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tpt-infer"
+path = "src/main.rs"
+# `cargo doc` would otherwise generate this binary's rustdoc at the same
+# `tpt_infer/` output path as the `tpt-infer` facade *library* crate's docs,
+# silently overwriting one with the other; a CLI binary has no public API to
+# document anyway.
+doc = false
+
+[dependencies]
+tpt-infer = { workspace = true, features = ["onnx", "compile", "runtime", "ops-cpu"] }
+clap = { workspace = true, features = ["derive"] }

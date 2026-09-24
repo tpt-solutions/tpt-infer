@@ -122,11 +122,11 @@ pub fn binary(
     let ad = pad(a_dims)?;
     let bd = pad(b_dims)?;
     let od = pad(out_dims)?;
-    for i in 0..n {
+    for (i, out_val) in out.iter_mut().enumerate().take(n) {
         let oc = unravel_index(i, od);
         let ai = ravel_index(map_coord(&oc, &ad), ad);
         let bi = ravel_index(map_coord(&oc, &bd), bd);
-        out[i] = match op {
+        *out_val = match op {
             BinaryOp::Add => a[ai] + b[bi],
             BinaryOp::Sub => a[ai] - b[bi],
             BinaryOp::Mul => a[ai] * b[bi],
@@ -169,10 +169,10 @@ pub fn add_inplace_broadcast(
     }
     let bd = pad(bias_dims)?;
     let od = pad(out_dims)?;
-    for i in 0..n {
+    for (i, out_val) in out.iter_mut().enumerate().take(n) {
         let oc = unravel_index(i, od);
         let bi = ravel_index(map_coord(&oc, &bd), bd);
-        out[i] += bias[bi];
+        *out_val += bias[bi];
     }
     Ok(())
 }
@@ -520,13 +520,13 @@ pub fn transpose(
     let xd = pad(x_dims)?;
     let od = pad(out_dims)?;
     let offset = MAX_RANK - rank;
-    for i in 0..n {
+    for (i, out_val) in out.iter_mut().enumerate().take(n) {
         let oc = unravel_index(i, od);
         let mut xc = [0usize; MAX_RANK];
         for d in 0..rank {
             xc[offset + perm[d]] = oc[offset + d];
         }
-        out[i] = x[ravel_index(xc, xd)];
+        *out_val = x[ravel_index(xc, xd)];
     }
     Ok(())
 }
@@ -556,7 +556,9 @@ pub fn concat_copy_one(
     if c_src == 0 || inner == 0 || c_offset.saturating_add(c_src) > c_total {
         return Err(RuntimeError::ShapeMismatch);
     }
-    let src_block = c_src.checked_mul(inner).ok_or(RuntimeError::ShapeMismatch)?;
+    let src_block = c_src
+        .checked_mul(inner)
+        .ok_or(RuntimeError::ShapeMismatch)?;
     if src_block == 0 || src.len() % src_block != 0 {
         return Err(RuntimeError::SizeMismatch {
             expected: src.len() / src_block.max(1) * src_block,
@@ -567,7 +569,9 @@ pub fn concat_copy_one(
     let out_block = c_total
         .checked_mul(inner)
         .ok_or(RuntimeError::ShapeMismatch)?;
-    let expected_out = outer.checked_mul(out_block).ok_or(RuntimeError::ShapeMismatch)?;
+    let expected_out = outer
+        .checked_mul(out_block)
+        .ok_or(RuntimeError::ShapeMismatch)?;
     if out.len() != expected_out {
         return Err(RuntimeError::SizeMismatch {
             expected: expected_out,
@@ -592,16 +596,7 @@ mod tests {
         let a = [1.0f32, 2.0];
         let b = [10.0f32, 20.0, 30.0];
         let mut out = [0.0f32; 6];
-        binary(
-            BinaryOp::Add,
-            &a,
-            &[2, 1],
-            &b,
-            &[1, 3],
-            &mut out,
-            &[2, 3],
-        )
-        .unwrap();
+        binary(BinaryOp::Add, &a, &[2, 1], &b, &[1, 3], &mut out, &[2, 3]).unwrap();
         assert_eq!(out, [11.0, 21.0, 31.0, 12.0, 22.0, 32.0]);
     }
 
@@ -709,8 +704,14 @@ mod tests {
         let mean = [1.0f32, 3.0];
         let var = [1.0f32, 1.0];
         let mut out = [0.0f32; 4];
-        batch_norm(&x, &[1, 2, 1, 2], &mut out, [(&scale), (&bias), (&mean), (&var)], 0.0)
-            .unwrap();
+        batch_norm(
+            &x,
+            &[1, 2, 1, 2],
+            &mut out,
+            [(&scale), (&bias), (&mean), (&var)],
+            0.0,
+        )
+        .unwrap();
         // ch0: (x-1)*2 = 0, 2 ; ch1: (x-3) + 10 = 10, 11
         assert_eq!(out, [0.0, 2.0, 10.0, 11.0]);
     }

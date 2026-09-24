@@ -29,6 +29,10 @@ prost-build = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Used only by the opt-in real-model fixture test (see
+# tests/real_model_fixtures.rs); never a production dependency.
+ureq = { workspace = true }
+sha2 = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

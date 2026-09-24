@@ -54,6 +54,47 @@ jobs:
       - name: runtime (thumbv7m)
         run: cargo build -p tpt-infer-runtime --target thumbv7m-none-eabi
 
+  wasm:
+    name: WASM build (tpt-infer-wasm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build -p tpt-infer-wasm --target wasm32-unknown-unknown
+      - name: Clippy
+        run: cargo clippy -p tpt-infer-wasm --target wasm32-unknown-unknown -- -D warnings
+
+  python:
+    name: Python bindings (tpt-infer-py)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
+      - name: Build wheel
+        working-directory: crates/tpt-infer-py
+        run: maturin build --release --out dist
+      - name: Install wheel
+        run: pip install --find-links crates/tpt-infer-py/dist tpt-infer
+      - name: Smoke test
+        run: python -c "
+          import tpt_infer;
+          assert hasattr(tpt_infer.Model, 'load');
+          assert hasattr(tpt_infer.Model, 'load_bytes');
+          assert hasattr(tpt_infer.Model, 'run');
+          assert hasattr(tpt_infer.Model, 'compile');
+          print('tpt-infer-py imports and exposes the expected API')
+          "
+
   docs:
     name: Docs
     runs-on: ubuntu-latest
@@ -74,3 +115,22 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  real-model-validation:
+    name: Real ONNX model validation
+    runs-on: ubuntu-latest
+    # Downloads a real (non-synthetic) .onnx fixture over the network — kept
+    # separate from the main `test` job so a transient network issue can't
+    # turn into a false-red required check. See
+    # crates/tpt-infer-onnx/tests/fixtures/real/README.md.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch + parse real-model fixture
+        env:
+          TPT_INFER_FETCH_FIXTURES: "1"
+        run: cargo test -p tpt-infer-onnx --test real_model_fixtures
+      - name: Execute real-model fixture end to end
+        run: cargo test -p tpt-infer-runtime --test onnx_real_model_end_to_end --features std

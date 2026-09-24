@@ -24,3 +24,5 @@ criterion/
 # tpt-infer-onnx/tests/generate_fixtures.rs (a few KB, committed for
 # reproducible offline tests — not real pretrained model weights).
 !/crates/tpt-infer-onnx/tests/fixtures/*.onnx
+# tpt-weave working state
+/.tpt-weave/

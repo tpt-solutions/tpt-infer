@@ -355,8 +355,13 @@ mod tests {
             .unwrap();
         let y = g
             .add_node(
-                Node::new(1, Operator::Custom("LayerNormalization".into()), vec![x], &[1, 4])
-                    .unwrap(),
+                Node::new(
+                    1,
+                    Operator::Custom("LayerNormalization".into()),
+                    vec![x],
+                    &[1, 4],
+                )
+                .unwrap(),
             )
             .unwrap();
         g.mark_output(y).unwrap();

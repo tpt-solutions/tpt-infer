@@ -23,6 +23,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use tpt_infer_core::BumpArena;
 use tpt_infer_graph::{ComputationGraph, Initializer, Node, Operator};
 use tpt_infer_ops::dispatch::select_backend;
+use tpt_infer_ops::Backend;
 use tpt_infer_runtime::{execute_graph, required_arena_bytes};
 
 /// Timed samples collected for the median / p99 report.
@@ -38,7 +39,13 @@ fn add_input(g: &mut ComputationGraph, dims: &[usize], name: &str) -> usize {
     .unwrap()
 }
 
-fn add_weight(g: &mut ComputationGraph, name: &str, dims: &[usize], scale: f32, seed: u32) -> usize {
+fn add_weight(
+    g: &mut ComputationGraph,
+    name: &str,
+    dims: &[usize],
+    scale: f32,
+    seed: u32,
+) -> usize {
     let len: usize = dims.iter().product();
     let mut s = seed;
     let data: Vec<f32> = (0..len)
@@ -73,10 +80,17 @@ fn add_conv(
 
 fn add_unary(g: &mut ComputationGraph, op: Operator, x: usize, odims: &[usize]) -> usize {
     let id = g.nodes().len();
-    g.add_node(Node::new(id, op, vec![x], odims).unwrap()).unwrap()
+    g.add_node(Node::new(id, op, vec![x], odims).unwrap())
+        .unwrap()
 }
 
-fn add_binary(g: &mut ComputationGraph, op: Operator, a: usize, b: usize, odims: &[usize]) -> usize {
+fn add_binary(
+    g: &mut ComputationGraph,
+    op: Operator,
+    a: usize,
+    b: usize,
+    odims: &[usize],
+) -> usize {
     let id = g.nodes().len();
     g.add_node(Node::new(id, op, vec![a, b], odims).unwrap())
         .unwrap()
@@ -107,18 +121,78 @@ fn mobilenet_v2_small() -> ComputationGraph {
     cur = add_unary(&mut g, Operator::Relu, cur, &[1, 16, 8, 8]);
 
     // Block 1: stride 2, no residual.
-    let mut t = add_conv(&mut g, cur, "b1_expand_w", &[32, 16, 1, 1], 0.05, next(), [1, 1], [0, 0], &[1, 32, 8, 8]);
+    let mut t = add_conv(
+        &mut g,
+        cur,
+        "b1_expand_w",
+        &[32, 16, 1, 1],
+        0.05,
+        next(),
+        [1, 1],
+        [0, 0],
+        &[1, 32, 8, 8],
+    );
     t = add_unary(&mut g, Operator::Relu, t, &[1, 32, 8, 8]);
-    t = add_conv(&mut g, t, "b1_spatial_w", &[32, 32, 3, 3], 0.05, next(), [2, 2], [1, 1], &[1, 32, 4, 4]);
+    t = add_conv(
+        &mut g,
+        t,
+        "b1_spatial_w",
+        &[32, 32, 3, 3],
+        0.05,
+        next(),
+        [2, 2],
+        [1, 1],
+        &[1, 32, 4, 4],
+    );
     t = add_unary(&mut g, Operator::Relu, t, &[1, 32, 4, 4]);
-    let b1 = add_conv(&mut g, t, "b1_proj_w", &[16, 32, 1, 1], 0.05, next(), [1, 1], [0, 0], &[1, 16, 4, 4]);
+    let b1 = add_conv(
+        &mut g,
+        t,
+        "b1_proj_w",
+        &[16, 32, 1, 1],
+        0.05,
+        next(),
+        [1, 1],
+        [0, 0],
+        &[1, 16, 4, 4],
+    );
 
     // Block 2: stride 1 with residual add.
-    let mut t = add_conv(&mut g, b1, "b2_expand_w", &[32, 16, 1, 1], 0.05, next(), [1, 1], [0, 0], &[1, 32, 4, 4]);
+    let mut t = add_conv(
+        &mut g,
+        b1,
+        "b2_expand_w",
+        &[32, 16, 1, 1],
+        0.05,
+        next(),
+        [1, 1],
+        [0, 0],
+        &[1, 32, 4, 4],
+    );
     t = add_unary(&mut g, Operator::Relu, t, &[1, 32, 4, 4]);
-    t = add_conv(&mut g, t, "b2_spatial_w", &[32, 32, 3, 3], 0.05, next(), [1, 1], [1, 1], &[1, 32, 4, 4]);
+    t = add_conv(
+        &mut g,
+        t,
+        "b2_spatial_w",
+        &[32, 32, 3, 3],
+        0.05,
+        next(),
+        [1, 1],
+        [1, 1],
+        &[1, 32, 4, 4],
+    );
     t = add_unary(&mut g, Operator::Relu, t, &[1, 32, 4, 4]);
-    let b2p = add_conv(&mut g, t, "b2_proj_w", &[16, 32, 1, 1], 0.05, next(), [1, 1], [0, 0], &[1, 16, 4, 4]);
+    let b2p = add_conv(
+        &mut g,
+        t,
+        "b2_proj_w",
+        &[16, 32, 1, 1],
+        0.05,
+        next(),
+        [1, 1],
+        [0, 0],
+        &[1, 16, 4, 4],
+    );
     let cur = add_binary(&mut g, Operator::Add, b1, b2p, &[1, 16, 4, 4]);
 
     let gap = add_unary(
@@ -144,9 +218,7 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 
 fn bench_latency(c: &mut Criterion) {
     let graph = mobilenet_v2_small();
-    let input: Vec<f32> = (0..1 * 8 * 16 * 16)
-        .map(|i| (i % 255) as f32 / 255.0)
-        .collect();
+    let input: Vec<f32> = (0..8 * 16 * 16).map(|i| (i % 255) as f32 / 255.0).collect();
     let mut mem = vec![0u8; required_arena_bytes(&graph) + 4096];
     let backend = select_backend();
     eprintln!(

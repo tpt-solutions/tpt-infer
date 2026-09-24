@@ -141,3 +141,108 @@
 - [x] Set up `CHANGELOG.md` — every crate has its own
 - [ ] Tag `v0.1.0` pre-release on GitHub
 - [ ] Publish to crates.io (when ready)
+
+---
+
+## Security, Stub Cleanup & Adoption (2026 review)
+
+> Follow-up from a full project review + security audit. See `SECURITY.md`
+> for the trust-boundary writeup and `deny.toml` for the supply-chain
+> policy.
+
+### Security hardening (untrusted ONNX/image input)
+
+- [x] Checked arithmetic (`checked_add`/`checked_sub`) in ONNX conv/pool
+      shape inference — `tpt-infer-onnx/src/shapes.rs`; previously an
+      attacker-controlled kernel/pad/input combination could underflow
+      (panic in debug, wrap in release)
+- [x] Checked multiplication for declared-size validation in
+      `Initializer::new` (`tpt-infer-graph`), ONNX initializer loading, and
+      `RawRgbImage::to_rgb8` (`tpt-infer-vision`) — replaced unchecked
+      `.iter().product()` / `width * height * 3`
+- [x] ONNX loader hardening (`tpt-infer-onnx/src/load.rs`):
+      `load_from_bytes_with_limits` (byte-size + node/attribute count caps),
+      opset-version enforcement, reject negative initializer dims, reject
+      (not silently drop) size-mismatched initializers
+- [x] Replace `debug_assert!` with real `assert!` for the length/alignment
+      invariants in `tpt-infer-core::traits::bytes_as_slice[_mut]` (was UB
+      in release builds on malformed input)
+- [x] `deny.toml` (cargo-deny: advisories, license allow-list, source
+      restrictions) + CI job
+- [x] `SECURITY.md` (trust boundary + vulnerability reporting)
+
+### Stub / doc-gap cleanup
+
+- [x] Add `Gelu` to AOT codegen (`tpt-infer-compile`) — was the one
+      operator still falling through to `CompileError::UnsupportedOperator`
+      after a prior pass already added Conv2d/Softmax/pooling/BatchNorm/
+      Concat/Transpose; verified numerically identical to the interpreted
+      runtime via a real `rustc`-compiled roundtrip test
+- [x] Fix stale "WebGPU backend stub" doc wording (`tpt-infer-ops/src/
+      dispatch.rs`, `tpt-infer/src/lib.rs`) — the WebGPU backend has real
+      WGSL compute kernels for every op, including conv2d
+- [x] Confirmed `fpga_stub.rs` is an intentional, correctly-documented
+      placeholder for the future `tpt-crucible` project — left unchanged
+
+### Real-world ONNX validation
+
+- [x] Add a genuine (non-synthetic) `.onnx` fixture — MNIST (opset 12,
+      Apache-2.0, ~26 KB) from `onnx/models`, fetched + SHA-256-verified +
+      cached on demand rather than vendored in git; see
+      `tests/fixtures/real/README.md`
+- [x] Opt-in CI job (`TPT_INFER_FETCH_FIXTURES=1`, `continue-on-error`) so
+      real-model compatibility gets signal without risking a flaky-network
+      false-red on required checks
+- [x] End-to-end execution test (`tpt-infer-runtime/tests/
+      onnx_real_model_end_to_end.rs`) — the real fixture doesn't just parse,
+      it now actually executes through the interpreted runtime
+- [x] Two genuine compatibility bugs the real fixture surfaced, fixed:
+      **(1)** `Reshape`'s target shape from a second *input* tensor (the
+      modern ONNX-9+ convention) was silently ignored — a dead-code branch
+      claimed to handle it but didn't; **(2)** `INT64` initializers (shape/
+      index tensors) were parsed but never bound as data, leaving them as
+      dangling free graph inputs the runtime could never resolve. Both are
+      fixed in `tpt-infer-onnx/src/load.rs`.
+- [x] `auto_pad` (`SAME_UPPER`/`SAME_LOWER`) support for `Conv2d`/pooling —
+      the real MNIST export uses it instead of an explicit `pads`
+      attribute; previously ignored, silently defaulting to zero padding
+
+### Adoption tooling
+
+- [x] Minimal CLI (`tpt-infer-cli`, binary name `tpt-infer`):
+      `inspect|run|compile` — verified end to end against the real MNIST
+      fixture, including surfacing the AOT compiler's (pre-existing, still
+      open) broadcasting-`Add` codegen limitation as a clear error rather
+      than a crash
+- [x] `CONTRIBUTING.md` — issues-only (no PRs accepted), the
+      checked-arithmetic convention, the `fpga_stub.rs` note, and the
+      `rust-version = "1.75"` MSRV reminder
+- [x] Expanded `examples/` in the facade crate: `quantize.rs` (INT8
+      round-trip), `aot_compile.rs` (codegen + real `rustc`-compiled
+      roundtrip check), `graph_builder.rs` (type-state compile-time
+      shape-check demo)
+- [x] crates.io publish readiness: all crates have
+      description/keywords/categories and `docs.rs` metadata; root
+      `README.md` got CI/docs.rs/crates.io/license badges and a corrected
+      Quick Start (the old one called methods — `compiled.execute(...)` —
+      that don't exist in the actual API)
+- [x] `tpt-infer-wasm`: `wasm-bindgen` JS bindings (`TptInferModel`
+      class — load/run/nodeCount/outputCount), verified end to end under
+      Node.js against the real MNIST fixture
+- [x] `tpt-infer-py`: PyO3 Python bindings (`tpt_infer.Model` —
+      load/load_bytes/run/compile), verified end to end via `maturin
+      develop` against the real MNIST fixture
+- [x] CI jobs for both: `wasm` (build + clippy on `wasm32-unknown-unknown`)
+      and `python` (`maturin build` + wheel install + import smoke test)
+
+### Known remaining gap (not fixed this pass)
+
+- [ ] AOT codegen (`tpt-infer-compile`) doesn't support broadcasting binary
+      ops (e.g. a per-channel bias `Add` with shape `[C,1,1]` against a
+      `[N,C,H,W]` activation) — the interpreted runtime handles this fine,
+      `aot_compile` reports `CompileError` cleanly rather than miscompiling,
+      but the real MNIST fixture's conv-bias pattern hits exactly this, so
+      `tpt-infer-cli compile` fails on it today. Documented in
+      `tpt-infer-compile/src/codegen.rs`'s existing "not generated (yet)"
+      comment; fixing it is a genuine feature addition (general broadcast
+      indexing in codegen), not a quick stub fix.
