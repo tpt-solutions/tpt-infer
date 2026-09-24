@@ -211,9 +211,8 @@
 
 - [x] Minimal CLI (`tpt-infer-cli`, binary name `tpt-infer`):
       `inspect|run|compile` — verified end to end against the real MNIST
-      fixture, including surfacing the AOT compiler's (pre-existing, still
-      open) broadcasting-`Add` codegen limitation as a clear error rather
-      than a crash
+      fixture (all three subcommands, including `compile`, now succeed on
+      it — see the broadcasting-codegen fix below)
 - [x] `CONTRIBUTING.md` — issues-only (no PRs accepted), the
       checked-arithmetic convention, the `fpga_stub.rs` note, and the
       `rust-version = "1.75"` MSRV reminder
@@ -235,14 +234,20 @@
 - [x] CI jobs for both: `wasm` (build + clippy on `wasm32-unknown-unknown`)
       and `python` (`maturin build` + wheel install + import smoke test)
 
-### Known remaining gap (not fixed this pass)
+### AOT codegen: numpy-style broadcasting for binary ops
 
-- [ ] AOT codegen (`tpt-infer-compile`) doesn't support broadcasting binary
-      ops (e.g. a per-channel bias `Add` with shape `[C,1,1]` against a
-      `[N,C,H,W]` activation) — the interpreted runtime handles this fine,
-      `aot_compile` reports `CompileError` cleanly rather than miscompiling,
-      but the real MNIST fixture's conv-bias pattern hits exactly this, so
-      `tpt-infer-cli compile` fails on it today. Documented in
-      `tpt-infer-compile/src/codegen.rs`'s existing "not generated (yet)"
-      comment; fixing it is a genuine feature addition (general broadcast
-      indexing in codegen), not a quick stub fix.
+- [x] `tpt-infer-compile`'s `Add`/`Sub`/`Mul`/`Div` codegen previously only
+      handled exact-same-shape operands; a per-channel bias `[C,1,1]`
+      against a `[N,C,H,W]` activation (the real MNIST fixture's pattern)
+      hit this and failed to compile. Added `emit_broadcast_binary`:
+      compile-time-computed (right-aligned, size-1-axis-masked) strides, so
+      the generated code is still plain unrolled/looped `usize` arithmetic —
+      no runtime rank-generic machinery. Matches
+      `tpt_infer_runtime::kernels::binary`'s semantics exactly (verified via
+      real `rustc`-compiled roundtrip tests, including against the real
+      MNIST fixture, which now **AOT-compiles and matches the interpreted
+      runtime exactly**, closing the gap noted above).
+- [x] Fixed alongside it: `Reshape` codegen assumed exactly one input, but
+      real exports have two (data + the now int64-initializer-bound
+      target-shape tensor) — relaxed to use only `inputs[0]`, since the
+      shape is already baked into the node's own metadata by the loader.

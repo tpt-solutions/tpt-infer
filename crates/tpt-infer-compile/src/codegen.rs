@@ -304,17 +304,8 @@ fn emit_elementwise_binary(
     let (a_id, b_id) = (node.inputs[0], node.inputs[1]);
     let a_dims = producer_dims(graph, a_id)?;
     let b_dims = producer_dims(graph, b_id)?;
-    if a_dims != b_dims || a_dims != node.dims() {
-        // Broadcasting binary ops are not generated (yet); only the exact
-        // same-shape case tpt-infer-runtime treats as the fast path here.
-        return Err(CompileError::ShapeMismatch { node: node.id });
-    }
-    let numel: usize = node.dims().iter().product();
+    let out_dims = node.dims();
 
-    let out = var_ident(node.id);
-    let a = var_ref(a_id, input_id);
-    let b = var_ref(b_id, input_id);
-    let len = usize_lit(numel);
     let op_tok = match node.operator {
         Operator::Add => quote! { + },
         Operator::Sub => quote! { - },
@@ -323,8 +314,112 @@ fn emit_elementwise_binary(
         _ => unreachable!("caller only routes Add/Sub/Mul/Div here"),
     };
 
+    if a_dims == b_dims && a_dims == out_dims {
+        // Fast path: identical shapes, no broadcast index mapping needed.
+        let numel: usize = out_dims.iter().product();
+        let out = var_ident(node.id);
+        let a = var_ref(a_id, input_id);
+        let b = var_ref(b_id, input_id);
+        let len = usize_lit(numel);
+
+        let body = for_or_unroll("i", numel, |i| {
+            quote! { #out[#i] = #a[#i] #op_tok #b[#i]; }
+        });
+
+        return Ok(quote! {
+            let mut #out: Vec<f32> = std::vec![0.0f32; #len];
+            #body
+        });
+    }
+
+    emit_broadcast_binary(
+        node, input_id, a_id, a_dims, b_id, b_dims, out_dims, &op_tok,
+    )
+}
+
+/// Numpy-style broadcasting binary op (e.g. a per-channel bias `[C,1,1]`
+/// added to a `[N,C,H,W]` activation — the common case in real ONNX
+/// exports), matching `tpt_infer_runtime::kernels::binary`'s semantics
+/// exactly. `a_dims`/`b_dims` are right-aligned against `out_dims`; a
+/// size-1 dimension in either operand always reads index `0` along that
+/// axis instead of advancing.
+///
+/// Every stride below is a compile-time constant (shapes are known at
+/// codegen time), so the per-element index mapping compiles down to plain
+/// `usize` arithmetic — no runtime rank-generic machinery needed.
+#[allow(clippy::too_many_arguments)]
+fn emit_broadcast_binary(
+    node: &Node,
+    input_id: usize,
+    a_id: usize,
+    a_dims: &[usize],
+    b_id: usize,
+    b_dims: &[usize],
+    out_dims: &[usize],
+    op_tok: &TokenStream,
+) -> Result<TokenStream, CompileError> {
+    let rank = out_dims.len();
+    if a_dims.len() > rank || b_dims.len() > rank {
+        return Err(CompileError::ShapeMismatch { node: node.id });
+    }
+    let pad = |dims: &[usize]| -> Vec<usize> {
+        let mut v = vec![1usize; rank - dims.len()];
+        v.extend_from_slice(dims);
+        v
+    };
+    let a_padded = pad(a_dims);
+    let b_padded = pad(b_dims);
+    for d in 0..rank {
+        let ok_a = a_padded[d] == 1 || a_padded[d] == out_dims[d];
+        let ok_b = b_padded[d] == 1 || b_padded[d] == out_dims[d];
+        if !ok_a || !ok_b {
+            return Err(CompileError::ShapeMismatch { node: node.id });
+        }
+    }
+
+    let out_strides = row_major_strides(out_dims);
+    let a_strides = row_major_strides(&a_padded);
+    let b_strides = row_major_strides(&b_padded);
+    // A size-1 (broadcast) axis always contributes index 0, regardless of
+    // its "real" stride — masking the stride to 0 encodes that directly.
+    let a_masked: Vec<usize> = (0..rank)
+        .map(|d| if a_padded[d] == 1 { 0 } else { a_strides[d] })
+        .collect();
+    let b_masked: Vec<usize> = (0..rank)
+        .map(|d| if b_padded[d] == 1 { 0 } else { b_strides[d] })
+        .collect();
+
+    let numel: usize = out_dims.iter().product();
+    let out = var_ident(node.id);
+    let a = var_ref(a_id, input_id);
+    let b = var_ref(b_id, input_id);
+    let len = usize_lit(numel);
+
     let body = for_or_unroll("i", numel, |i| {
-        quote! { #out[#i] = #a[#i] #op_tok #b[#i]; }
+        let mut steps = Vec::with_capacity(rank);
+        for d in 0..rank {
+            if out_strides[d] == 0 {
+                continue;
+            }
+            let os = usize_lit(out_strides[d]);
+            let am = usize_lit(a_masked[d]);
+            let bm = usize_lit(b_masked[d]);
+            steps.push(quote! {
+                let c = rem / #os;
+                rem %= #os;
+                a_idx += c * #am;
+                b_idx += c * #bm;
+            });
+        }
+        quote! {
+            #out[#i] = {
+                let mut rem: usize = #i;
+                let mut a_idx: usize = 0;
+                let mut b_idx: usize = 0;
+                #(#steps)*
+                #a[a_idx] #op_tok #b[b_idx]
+            };
+        }
     });
 
     Ok(quote! {
@@ -367,7 +462,14 @@ fn emit_reshape(
     node: &Node,
     input_id: usize,
 ) -> Result<TokenStream, CompileError> {
-    if node.inputs.len() != 1 {
+    // ONNX `Reshape` carries the target shape as a second *input* (a
+    // constant int64 tensor) in modern exports, rather than only an
+    // attribute. That target shape is already baked into this node's own
+    // `Operator::Reshape`/`dims()` metadata by the loader (see
+    // `int64_initializer` in `tpt-infer-onnx`), so the second input (if
+    // present) is irrelevant to codegen here — only the data operand
+    // (`inputs[0]`) is actually read.
+    if node.inputs.is_empty() {
         return Err(CompileError::ShapeMismatch { node: node.id });
     }
     let a_id = node.inputs[0];
@@ -1047,6 +1149,65 @@ mod tests {
 
     fn graph_topo(graph: &ComputationGraph) -> Vec<usize> {
         graph.topological_sort().unwrap()
+    }
+
+    #[test]
+    fn broadcast_incompatible_shapes_rejected() {
+        // [3] does not broadcast against [4] (neither is 1, they differ),
+        // under the same numpy right-aligned rule `tpt-infer-runtime` uses
+        // — codegen must reject this cleanly rather than generating an
+        // out-of-bounds index or a result that disagrees with the runtime.
+        let mut g = ComputationGraph::new();
+        let a = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[3]).unwrap())
+            .unwrap();
+        let b = g
+            .add_node(
+                Node::new(1, Operator::Input, vec![], &[4])
+                    .unwrap()
+                    .with_name("b"),
+            )
+            .unwrap();
+        g.add_initializer(Initializer::new("b", &[4], vec![0.0; 4]).unwrap());
+        let y = g
+            .add_node(Node::new(2, Operator::Add, vec![a, b], &[4]).unwrap())
+            .unwrap();
+        g.mark_output(y).unwrap();
+
+        let order = graph_topo(&g);
+        let folded = fold_constants(&g, &order);
+        let err = generate(&g, &order, a, y, &folded).unwrap_err();
+        assert_eq!(err, CompileError::ShapeMismatch { node: y });
+    }
+
+    #[test]
+    fn broadcast_bias_generates_index_mapping() {
+        // Sanity check on the generated source for the broadcasting path
+        // (as opposed to the exact-same-shape fast path): it must divide by
+        // a non-trivial stride somewhere, since a per-channel bias requires
+        // an actual coordinate-to-index mapping, not a flat `a[i] + b[i]`.
+        let mut g = ComputationGraph::new();
+        let x = g
+            .add_node(Node::new(0, Operator::Input, vec![], &[1, 2, 2, 2]).unwrap())
+            .unwrap();
+        let bias = g
+            .add_node(
+                Node::new(1, Operator::Input, vec![], &[1, 2, 1, 1])
+                    .unwrap()
+                    .with_name("bias"),
+            )
+            .unwrap();
+        g.add_initializer(Initializer::new("bias", &[1, 2, 1, 1], vec![1.0, -1.0]).unwrap());
+        let y = g
+            .add_node(Node::new(2, Operator::Add, vec![x, bias], &[1, 2, 2, 2]).unwrap())
+            .unwrap();
+        g.mark_output(y).unwrap();
+
+        let body = generate_body(&g, x, y);
+        assert!(
+            body.contains("a_idx"),
+            "expected broadcast index mapping, got: {body}"
+        );
     }
 
     #[test]

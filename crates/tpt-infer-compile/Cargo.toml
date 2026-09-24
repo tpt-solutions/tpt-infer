@@ -26,6 +26,11 @@ tempfile = { workspace = true }
 criterion = { workspace = true }
 tpt-infer-ops = { workspace = true }
 tpt-infer-runtime = { workspace = true, features = ["std"] }
+# Dev-only: lets the real-model regression test load the cached real ONNX
+# fixture (see crates/tpt-infer-onnx/tests/fixtures/real/). tpt-infer-onnx
+# does not depend on tpt-infer-compile, so this does not create a cycle
+# (same pattern as tpt-infer-runtime's dev-dependency on it).
+tpt-infer-onnx = { workspace = true, default-features = false, features = ["std"] }
 
 [[bench]]
 name = "codegen_vs_interpreted"

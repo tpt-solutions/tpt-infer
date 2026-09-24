@@ -134,3 +134,5 @@ jobs:
         run: cargo test -p tpt-infer-onnx --test real_model_fixtures
       - name: Execute real-model fixture end to end
         run: cargo test -p tpt-infer-runtime --test onnx_real_model_end_to_end --features std
+      - name: AOT-compile real-model fixture end to end
+        run: cargo test -p tpt-infer-compile --test aot_roundtrip real_mnist_onnx_aot_compiles

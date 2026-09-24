@@ -39,9 +39,15 @@ for the full write-then-compile-then-run workflow). `CompiledModel` also exposes
 - **Exactly one** non-initializer (`Operator::Input`) runtime input, since the
   generated signature is fixed as `fn execute(input: &[f32]) -> Vec<f32>`.
 - **Exactly one** marked output (via `ComputationGraph::mark_output`/`infer_outputs`).
-- The operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands), `Relu`,
-  `Sigmoid`, `Reshape`/`Flatten`, `Conv2d`, `Softmax`, `MaxPool2d`/`AveragePool2d`,
+- The operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape or numpy-broadcastable
+  operands — e.g. a per-channel `[C,1,1]` bias against a `[N,C,H,W]` activation), `Relu`,
+  `Sigmoid`, `Gelu`, `Reshape`/`Flatten`, `Conv2d`, `Softmax`, `MaxPool2d`/`AveragePool2d`,
   `BatchNorm`, `Concat`, and `Transpose`:
+  - `Add`/`Sub`/`Mul`/`Div` — an exact-shape fast path (`a[i] op b[i]`), or, when the
+    operand shapes differ, a broadcasting path that computes each operand's index via
+    compile-time-constant (right-aligned, size-1-axis-masked) strides — still plain
+    unrolled/looped `usize` arithmetic in the generated code, matching
+    `tpt_infer_runtime::kernels::binary`'s semantics exactly.
   - `Conv2d` — direct/naive-loop NCHW convolution (no im2col), matching
     `NaiveBackend::conv2d`'s stride/padding/accumulation order exactly, plus an
     optional bias input broadcast per output channel. Only a `[1, oc, 1, 1]` bias

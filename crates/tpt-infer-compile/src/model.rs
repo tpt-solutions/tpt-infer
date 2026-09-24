@@ -154,8 +154,10 @@ impl CompiledModel {
 ///   node — the runtime input.
 /// - Exactly one marked output ([`ComputationGraph::mark_output`] /
 ///   [`ComputationGraph::infer_outputs`]).
-/// - Operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands),
-///   `Relu`, `Sigmoid`, `Gelu`, `Reshape`/`Flatten`, `Conv2d`
+/// - Operators `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape or
+///   numpy-broadcastable operands, e.g. a per-channel `[C,1,1]` bias against
+///   a `[N,C,H,W]` activation), `Relu`, `Sigmoid`, `Gelu`,
+///   `Reshape`/`Flatten`, `Conv2d`
 ///   (direct/naive-loop, optional per-channel bias), `Softmax` (last-axis
 ///   only, matching `tpt-infer-runtime`'s own restriction),
 ///   `MaxPool2d`/`AveragePool2d`, `BatchNorm`, `Concat`, and `Transpose`.

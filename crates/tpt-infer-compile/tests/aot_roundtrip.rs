@@ -348,6 +348,60 @@ fn conv2d_with_bias_matches_interpreted_runtime() {
 }
 
 #[test]
+fn broadcast_bias_add_matches_interpreted_runtime() {
+    // x [1,2,2,2] (runtime, standing in for a conv activation)
+    // --Add(bias [1,2,1,1])--> [1,2,2,2]: a per-channel bias broadcasting
+    // over the spatial axes, as real ONNX exports commonly emit as a
+    // standalone `Add` (rather than a `Conv2d`-with-bias input) — this is
+    // exactly the pattern the real MNIST fixture (see
+    // crates/tpt-infer-onnx/tests/fixtures/real/) hits.
+    let mut g = ComputationGraph::new();
+    let x = g
+        .add_node(Node::new(0, Operator::Input, vec![], &[1, 2, 2, 2]).unwrap())
+        .unwrap();
+    let bias = g
+        .add_node(
+            Node::new(1, Operator::Input, vec![], &[1, 2, 1, 1])
+                .unwrap()
+                .with_name("bias"),
+        )
+        .unwrap();
+    g.add_initializer(Initializer::new("bias", &[1, 2, 1, 1], vec![10.0, -10.0]).unwrap());
+    let y = g
+        .add_node(Node::new(2, Operator::Add, vec![x, bias], &[1, 2, 2, 2]).unwrap())
+        .unwrap();
+    g.mark_output(y).unwrap();
+
+    let input: Vec<f32> = (0..8).map(|i| i as f32 * 0.5).collect();
+    assert_roundtrip_matches(&g, &input, 1e-5);
+}
+
+#[test]
+fn broadcast_scalar_mul_matches_interpreted_runtime() {
+    // x [2,3] (runtime) --Mul(scalar [1,1])--> [2,3]: broadcasting on every
+    // axis at once, the most extreme case of the same mechanism.
+    let mut g = ComputationGraph::new();
+    let x = g
+        .add_node(Node::new(0, Operator::Input, vec![], &[2, 3]).unwrap())
+        .unwrap();
+    let scale = g
+        .add_node(
+            Node::new(1, Operator::Input, vec![], &[1, 1])
+                .unwrap()
+                .with_name("scale"),
+        )
+        .unwrap();
+    g.add_initializer(Initializer::new("scale", &[1, 1], vec![2.5]).unwrap());
+    let y = g
+        .add_node(Node::new(2, Operator::Mul, vec![x, scale], &[2, 3]).unwrap())
+        .unwrap();
+    g.mark_output(y).unwrap();
+
+    let input: Vec<f32> = (0..6).map(|i| i as f32 - 3.0).collect();
+    assert_roundtrip_matches(&g, &input, 1e-5);
+}
+
+#[test]
 fn softmax_last_axis_matches_interpreted_runtime() {
     // x [2,4] (runtime) --Softmax(axis=-1)--> [2,4]
     let mut g = ComputationGraph::new();
@@ -554,4 +608,37 @@ fn unsupported_softmax_axis_reports_error_instead_of_panicking() {
             ..
         }
     ));
+}
+
+/// Regression test for the real (non-synthetic) MNIST fixture (see
+/// `crates/tpt-infer-onnx/tests/fixtures/real/README.md`): it previously
+/// failed to `aot_compile` at all — first on a `Reshape` node whose second
+/// input is the (now int64-initializer-bound) target-shape tensor, then on
+/// a per-channel bias `Add` broadcasting `[1,C,1,1]` against `[1,C,H,W]`,
+/// which the exact-same-shape-only fast path rejected. Both are fixed; this
+/// locks in that the real model round-trips through AOT compilation too,
+/// not just the interpreted runtime (see `onnx_real_model_end_to_end.rs` in
+/// `tpt-infer-runtime`).
+///
+/// Skipped (not failed) if the fixture isn't cached — run
+/// `TPT_INFER_FETCH_FIXTURES=1 cargo test -p tpt-infer-onnx --test
+/// real_model_fixtures` first.
+#[test]
+fn real_mnist_onnx_aot_compiles_and_matches_interpreted_runtime() {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../tpt-infer-onnx/tests/fixtures/real/mnist-12.onnx");
+    if !path.exists() {
+        eprintln!(
+            "skipping: {} not cached; run `TPT_INFER_FETCH_FIXTURES=1 cargo test \
+             -p tpt-infer-onnx --test real_model_fixtures` first",
+            path.display()
+        );
+        return;
+    }
+
+    let g = tpt_infer_onnx::load(&path).expect("real ONNX file load must succeed");
+    let input: Vec<f32> = (0..28 * 28)
+        .map(|i| ((i % 17) as f32 / 17.0) - 0.5)
+        .collect();
+    assert_roundtrip_matches(&g, &input, 1e-4);
 }

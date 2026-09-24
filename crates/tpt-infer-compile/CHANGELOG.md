@@ -12,12 +12,13 @@ This crate is pre-release; versions have not yet been published to crates.io.
 - `aot_compile(graph: &ComputationGraph) -> Result<CompiledModel, CompileError>`:
   walks the graph in topological order and generates a self-contained
   `pub fn execute(input: &[f32]) -> Vec<f32>` Rust source string.
-- Supported operators: `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape operands), `Relu`,
-  `Sigmoid`, `Reshape`/`Flatten`, `Conv2d` (direct/naive-loop, optional per-channel
-  bias), `Softmax` (last axis only), `MaxPool2d`/`AveragePool2d`, `BatchNorm`,
-  `Concat`, and `Transpose`. Unsupported operators (`Operator::Custom`, `Gelu`, ...)
-  are reported via `CompileError::UnsupportedOperator` rather than silently
-  mis-generated.
+- Supported operators: `MatMul`, `Add`/`Sub`/`Mul`/`Div` (same-shape or
+  numpy-broadcastable operands — an exact-shape fast path plus a general broadcasting
+  path using compile-time-constant strides), `Relu`, `Sigmoid`, `Gelu`,
+  `Reshape`/`Flatten`, `Conv2d` (direct/naive-loop, optional per-channel bias),
+  `Softmax` (last axis only), `MaxPool2d`/`AveragePool2d`, `BatchNorm`, `Concat`, and
+  `Transpose`. Unsupported operators (`Operator::Custom`, ...) are reported via
+  `CompileError::UnsupportedOperator` rather than silently mis-generated.
 - Constant folding (`fold::fold_constants`): nodes whose inputs are entirely
   compile-time constants are evaluated during compilation and spliced into the
   generated source as array literals. Covers the same operator set as `codegen`
@@ -42,6 +43,10 @@ This crate is pre-release; versions have not yet been published to crates.io.
 ### Known limitations
 
 - Only single-input, single-output graphs are supported.
+- `Reshape`/`Flatten` codegen only reads the data operand (`inputs[0]`) — the target
+  shape must already be resolved into the node's own `Operator::Reshape` metadata by
+  the loader, whether it came from an ONNX `shape` attribute or (the modern-export
+  convention) a second constant *input* tensor.
 - `Softmax` codegen only generates last-axis normalization, matching
   `tpt-infer-runtime`'s own `Backend::softmax` restriction; other axes report
   `CompileError::UnsupportedRank` rather than being silently miscompiled (constant

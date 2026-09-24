@@ -21,13 +21,24 @@ println!("{} nodes", graph.nodes().len());
 
 `load_from_bytes(bytes: &[u8])` is available for models that are already in memory
 (e.g. embedded via `include_bytes!` or fetched over the network) instead of a path.
+`load_from_bytes_with_limits(bytes, max_bytes, max_graph_items)` additionally lets a
+caller set explicit resource limits — useful on memory-constrained targets, or to
+accept larger models than the defaults allow — since **an ONNX file is untrusted
+input** (see the workspace `SECURITY.md`): both `load`/`load_from_bytes` apply generous
+default limits (`DEFAULT_MAX_MODEL_BYTES`, `DEFAULT_MAX_GRAPH_ITEMS`) and reject models
+whose default-domain opset exceeds `MAX_SUPPORTED_OPSET`.
 
 ## What it does
 
 - `load` / `load_from_bytes` — decode the `ModelProto`, then `graph_from_proto` builds
   the `ComputationGraph`: one `Node` per ONNX node (mapped through `registry::map_op`),
-  `Initializer`s for constant weight tensors, and graph inputs/outputs wired up from the
-  model's `ValueInfoProto` lists.
+  `Initializer`s for constant weight tensors (including `INT64` shape/index tensors,
+  read and bound as data rather than left as unresolved free inputs), and graph
+  inputs/outputs wired up from the model's `ValueInfoProto` lists. `Reshape`'s target
+  shape is resolved from either a `shape` attribute (legacy) or a second constant
+  *input* tensor (the modern, opset ≥ 5 convention most real exports use), and
+  `Conv2d`/pooling's `auto_pad` (`SAME_UPPER`/`SAME_LOWER`) is resolved to concrete
+  symmetric padding once the input's spatial size is known.
 - `registry::map_op` — maps ONNX op-type strings to `tpt_infer_graph::Operator`
   variants (`MatMul`/`Gemm`, `Add`/`Sub`/`Mul`/`Div`, `Relu`, `Sigmoid`, `Gelu`/`Erf`,
   `Softmax`, `Reshape`, `Flatten`, `Transpose`, `Concat`, `Conv`, `MaxPool`/
